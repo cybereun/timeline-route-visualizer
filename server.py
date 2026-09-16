@@ -48,12 +48,13 @@ class TimelineRequestHandler(BaseHTTPRequestHandler):
 
     def get_effective_path(self):
         # Vercel Serverless Function에서 rewrites 후의 원래 요청 경로 복원
+        for header_name in ["x-invoke-path", "x-forwarded-uri", "x-vercel-original-url", "x-original-url"]:
+            val = self.headers.get(header_name)
+            if val and not val.endswith(".py"):
+                return val
         matched = self.headers.get("x-matched-path")
-        if matched and matched.startswith("/api/"):
+        if matched and not matched.endswith(".py") and matched.startswith("/api/"):
             return matched
-        forwarded = self.headers.get("x-forwarded-uri")
-        if forwarded and forwarded.startswith("/api/"):
-            return forwarded
         return self.path
 
     def do_OPTIONS(self):
@@ -353,6 +354,13 @@ class TimelineRequestHandler(BaseHTTPRequestHandler):
         })
 
     def handle_api_video_render(self):
+        if IS_VERCEL:
+            self.send_json({
+                "success": False,
+                "error": "Vercel 클라우드 환경에서는 비디오 인코딩(FFmpeg) 엔진이 지원되지 않습니다. 영상 제작은 PC에서 run.bat 또는 make_threads_video.bat를 실행해 주세요."
+            })
+            return
+
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
@@ -476,7 +484,11 @@ class TimelineRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": "전송된 데이터가 없습니다."})
                 return
 
-            temp_upload_path = os.path.join(BASE_DIR, "temp_uploaded_timeline.json")
+            if IS_VERCEL:
+                temp_upload_path = "/tmp/temp_uploaded_timeline.json"
+            else:
+                import tempfile
+                temp_upload_path = os.path.join(tempfile.gettempdir(), "temp_uploaded_timeline.json")
             # 스트리밍 저장
             remaining = content_length
             chunk_size = 65536

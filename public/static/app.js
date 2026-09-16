@@ -1,5 +1,387 @@
 // 타임라인 지도 시각화 앱 메인 스크립트
 
+// -------------------------------------------------------------
+// 브라우저 로컬 저장소(IndexedDB) 기반 대용량 타임라인 데이터 관리자
+// -------------------------------------------------------------
+const TimelineStore = {
+  DB_NAME: "TimelineRouteDB",
+  DB_VERSION: 1,
+  _db: null,
+
+  async getDB() {
+    if (this._db) return this._db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains("days")) {
+          db.createObjectStore("days", { keyPath: "date" });
+        }
+        if (!db.objectStoreNames.contains("meta")) {
+          db.createObjectStore("meta");
+        }
+      };
+      req.onsuccess = () => {
+        this._db = req.result;
+        resolve(this._db);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async hasData() {
+    try {
+      const summary = await this.getMeta("summary");
+      return !!(summary && summary.totalDays > 0);
+    } catch {
+      return false;
+    }
+  },
+
+  async getMeta(key) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("meta", "readonly");
+      const store = tx.objectStore("meta");
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async getSummary() {
+    return await this.getMeta("summary");
+  },
+
+  async getDates(year) {
+    const allDates = (await this.getMeta("dates")) || [];
+    const years = (await this.getMeta("years")) || [];
+    if (!year) return { years, dates: allDates };
+    const filtered = allDates.filter((d) => d.date.startsWith(`${year}-`));
+    return { years, dates: filtered };
+  },
+
+  async getDay(date) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("days", "readonly");
+      const store = tx.objectStore("days");
+      const req = store.get(date);
+      req.onsuccess = () => {
+        const res = req.result;
+        if (!res) {
+          resolve({ date, segments: [], totalPoints: 0 });
+        } else {
+          resolve({
+            date: res.date,
+            segments: res.segments || [],
+            totalPoints: res.totalPoints || 0,
+          });
+        }
+      };
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async getHeatmap(year, month) {
+    const heatPoints = (await this.getMeta("heatPoints")) || [];
+    let filtered = heatPoints;
+    if (year && year !== "all") {
+      filtered = filtered.filter((p) => p[2] === String(year));
+    }
+    if (month && month !== "all") {
+      const mStr = String(month).padStart(2, "0");
+      filtered = filtered.filter((p) => p[3] === mStr);
+    }
+    const points = filtered.slice(0, 25000).map((p) => [p[0], p[1], 0.7]);
+    return { count: points.length, points };
+  },
+
+  async clearAll() {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["days", "meta"], "readwrite");
+      tx.objectStore("days").clear();
+      tx.objectStore("meta").clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
+  async parseAndImport(file, onProgress) {
+    if (onProgress) {
+      onProgress({
+        percent: 15,
+        text: `파일 읽는 중 (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`,
+      });
+    }
+    const text = await file.text();
+
+    if (onProgress) {
+      onProgress({ percent: 35, text: "JSON 파싱 중..." });
+    }
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new Error("올바른 JSON 파일 형식이 아닙니다: " + e.message);
+    }
+
+    const rawSegments = data.semanticSegments || (Array.isArray(data) ? data : []);
+    if (!rawSegments || rawSegments.length === 0) {
+      throw new Error("타임라인 동선 데이터(semanticSegments)를 찾을 수 없습니다.");
+    }
+
+    if (onProgress) {
+      onProgress({
+        percent: 55,
+        text: `${rawSegments.length.toLocaleString()}개 동선 구간 분석 중...`,
+      });
+    }
+
+    const coordRegex = /([+-]?\d+\.?\d*)\s*°?\s*,\s*([+-]?\d+\.?\d*)\s*°?/;
+    function parseLatLng(strOrObj) {
+      if (!strOrObj) return null;
+      if (typeof strOrObj === "object") {
+        if (strOrObj.lat !== undefined && strOrObj.lng !== undefined)
+          return [Number(strOrObj.lat), Number(strOrObj.lng)];
+        if (strOrObj.latitude !== undefined && strOrObj.longitude !== undefined)
+          return [Number(strOrObj.latitude), Number(strOrObj.longitude)];
+        if (strOrObj.latitudeE7 !== undefined && strOrObj.longitudeE7 !== undefined)
+          return [strOrObj.latitudeE7 / 1e7, strOrObj.longitudeE7 / 1e7];
+        if (strOrObj.latLng) return parseLatLng(strOrObj.latLng);
+        return null;
+      }
+      const m = coordRegex.exec(String(strOrObj));
+      if (m) {
+        const lat = parseFloat(m[1]);
+        const lng = parseFloat(m[2]);
+        if (!isNaN(lat) && !isNaN(lng))
+          return [Math.round(lat * 100000) / 100000, Math.round(lng * 100000) / 100000];
+      }
+      return null;
+    }
+
+    const dayMap = {};
+    const activitiesMap = {};
+    let totalPoints = 0;
+    let totalDist = 0;
+    let totalVisits = 0;
+    let totalSegments = 0;
+    const heatPoints = [];
+
+    for (let i = 0; i < rawSegments.length; i++) {
+      const s = rawSegments[i];
+      const st = s.startTime || "";
+      const et = s.endTime || "";
+      const date = st.slice(0, 10) || et.slice(0, 10);
+      if (!date) continue;
+      totalSegments++;
+
+      let duration = 0;
+      if (st && et) {
+        const diffMs = new Date(et) - new Date(st);
+        if (!isNaN(diffMs) && diffMs > 0) duration = diffMs / 60000;
+      }
+
+      let segType = "UNKNOWN";
+      let activityType = null;
+      let distanceMeters = null;
+      let placeId = null;
+      let placeName = null;
+      let placeAddress = null;
+      let startLat = null,
+        startLng = null;
+      let endLat = null,
+        endLng = null;
+
+      if (s.activity) {
+        segType = "ACTIVITY";
+        const act = s.activity;
+        distanceMeters = act.distanceMeters || null;
+        const topCand = act.topCandidate || {};
+        activityType = topCand.type || "UNKNOWN";
+
+        if (act.start && act.start.latLng) {
+          const p = parseLatLng(act.start.latLng);
+          if (p) [startLat, startLng] = p;
+        }
+        if (act.end && act.end.latLng) {
+          const p = parseLatLng(act.end.latLng);
+          if (p) [endLat, endLng] = p;
+        }
+
+        if (distanceMeters) totalDist += distanceMeters;
+        if (!activitiesMap[activityType])
+          activitiesMap[activityType] = { count: 0, dist: 0 };
+        activitiesMap[activityType].count++;
+        activitiesMap[activityType].dist += distanceMeters || 0;
+      } else if (s.visit) {
+        segType = "VISIT";
+        totalVisits++;
+        const v = s.visit;
+        const topCand = v.topCandidate || {};
+        placeId = topCand.placeId || null;
+        placeName = topCand.placeName || null;
+        placeAddress = topCand.placeAddress || null;
+        if (topCand.placeLocation && topCand.placeLocation.latLng) {
+          const p = parseLatLng(topCand.placeLocation.latLng);
+          if (p) {
+            startLat = p[0];
+            startLng = p[1];
+            endLat = p[0];
+            endLng = p[1];
+          }
+        }
+      } else if (s.timelinePath) {
+        segType = "PATH_ONLY";
+      }
+
+      const pointList = [];
+      if (s.timelinePath && Array.isArray(s.timelinePath)) {
+        for (const p of s.timelinePath) {
+          const pt = parseLatLng(p.point);
+          if (pt) {
+            pointList.push([pt[0], pt[1], p.time || st]);
+            totalPoints++;
+            if (totalPoints % 5 === 0) {
+              heatPoints.push([pt[0], pt[1], date.slice(0, 4), date.slice(5, 7)]);
+            }
+          }
+        }
+      } else if (startLat !== null && startLng !== null) {
+        pointList.push([startLat, startLng, st]);
+        totalPoints++;
+        if (
+          endLat !== null &&
+          endLng !== null &&
+          (endLat !== startLat || endLng !== startLng)
+        ) {
+          pointList.push([endLat, endLng, et]);
+          totalPoints++;
+        }
+        if (totalPoints % 5 === 0) {
+          heatPoints.push([startLat, startLng, date.slice(0, 4), date.slice(5, 7)]);
+        }
+      }
+
+      const segObj = {
+        id: i + 1,
+        date,
+        startTime: st,
+        endTime: et,
+        type: segType,
+        activityType,
+        distanceMeters,
+        placeId,
+        placeName,
+        placeAddress,
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        durationMinutes: Math.round(duration * 10) / 10,
+        points: pointList,
+      };
+
+      if (!dayMap[date]) {
+        dayMap[date] = { date, segments: [], totalPoints: 0, totalDist: 0 };
+      }
+      dayMap[date].segments.push(segObj);
+      dayMap[date].totalPoints += pointList.length;
+      if (distanceMeters) dayMap[date].totalDist += distanceMeters;
+    }
+
+    const datesArr = Object.keys(dayMap).sort();
+    const datesList = datesArr.map((d) => ({
+      date: d,
+      count: dayMap[d].segments.length,
+      dist: Math.round((dayMap[d].totalDist / 1000) * 100) / 100,
+    }));
+
+    const yearsSet = new Set(datesArr.map((d) => d.slice(0, 4)));
+    const yearsList = Array.from(yearsSet).sort().reverse();
+
+    const activities = Object.keys(activitiesMap)
+      .map((k) => ({
+        type: k,
+        count: activitiesMap[k].count,
+        distanceKm: Math.round((activitiesMap[k].dist / 1000) * 10) / 10,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const summary = {
+      totalDays: datesArr.length,
+      totalSegments,
+      totalPoints,
+      totalDistanceKm: Math.round((totalDist / 1000) * 10) / 10,
+      totalVisits,
+      startDate: datesArr[0] || "",
+      endDate: datesArr[datesArr.length - 1] || "",
+      activities,
+    };
+
+    if (onProgress) {
+      onProgress({
+        percent: 75,
+        text: "브라우저 로컬 저장소(IndexedDB)에 저장 중...",
+      });
+    }
+
+    const db = await this.getDB();
+    await this.clearAll();
+
+    // 일자별 배치 저장
+    const daysKeys = Object.keys(dayMap);
+    const batchSize = 500;
+    for (let i = 0; i < daysKeys.length; i += batchSize) {
+      const slice = daysKeys.slice(i, i + batchSize);
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("days", "readwrite");
+        const store = tx.objectStore("days");
+        for (const k of slice) {
+          store.put(dayMap[k]);
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      const pct = 75 + Math.round(((i + slice.length) / daysKeys.length) * 20);
+      if (onProgress) {
+        onProgress({
+          percent: pct,
+          text: `로컬 저장소 저장 중... (${Math.min(i + slice.length, daysKeys.length)}/${daysKeys.length}일)`,
+        });
+      }
+    }
+
+    // 메타데이터 저장
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("meta", "readwrite");
+      const store = tx.objectStore("meta");
+      store.put(summary, "summary");
+      store.put(datesList, "dates");
+      store.put(yearsList, "years");
+      store.put(heatPoints, "heatPoints");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    if (onProgress) {
+      onProgress({ percent: 100, text: "완료!" });
+    }
+
+    return {
+      success: true,
+      stats: {
+        dates: datesArr.length,
+        points: totalPoints,
+        segments: totalSegments,
+        distanceKm: summary.totalDistanceKm,
+      },
+    };
+  },
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   // 상태 변수
   let map = null;
@@ -32,6 +414,7 @@ document.addEventListener("DOMContentLoaded", () => {
     FLYING: { color: "#ec4899", name: "비행기", icon: "fa-plane" },
     SKIING: { color: "#38bdf8", name: "스키", icon: "fa-person-skiing" },
     IN_FERRY: { color: "#0284c7", name: "페리/배", icon: "fa-ship" },
+    UNKNOWN_ACTIVITY_TYPE: { color: "#64748b", name: "이동", icon: "fa-route" },
     UNKNOWN: { color: "#64748b", name: "이동", icon: "fa-route" },
     VISIT: { color: "#ef4444", name: "방문 장소", icon: "fa-location-dot" },
     PATH_ONLY: { color: "#64748b", name: "경로", icon: "fa-route" },
@@ -91,9 +474,46 @@ document.addEventListener("DOMContentLoaded", () => {
   // 2. 전체 통계 및 초기 날짜 목록 로드
   async function loadInitialData() {
     try {
-      // 통계 로드
-      const summaryRes = await fetch("/api/summary");
-      const summary = await summaryRes.json();
+      let summary = null;
+      let datesData = null;
+
+      if (await TimelineStore.hasData()) {
+        summary = await TimelineStore.getSummary();
+        datesData = await TimelineStore.getDates();
+      } else {
+        try {
+          const summaryRes = await fetch("/api/summary");
+          if (summaryRes.ok) summary = await summaryRes.json();
+          const datesRes = await fetch("/api/dates");
+          if (datesRes.ok) datesData = await datesRes.json();
+        } catch (e) {
+          console.log("서버 API 조회 건너뜀 (클라이언트 모드):", e);
+        }
+      }
+
+      const clearDataBtn = document.getElementById("clearDataBtn");
+      if (clearDataBtn) {
+        clearDataBtn.style.display = (await TimelineStore.hasData()) ? "inline-flex" : "none";
+      }
+
+      if (!summary || !summary.totalDays) {
+        document.getElementById("dataRangeBadge").innerText = "데이터 없음 (불러오기 필요)";
+        document.getElementById("statTotalDays").innerText = "0일";
+        document.getElementById("statTotalDistance").innerText = "0 km";
+        document.getElementById("statTotalVisits").innerText = "0회";
+        document.getElementById("statTotalPoints").innerText = "0개";
+        document.getElementById("timelineList").innerHTML = `
+          <div class="empty-state" style="padding: 24px 16px;">
+            <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2.2rem; color: #e90064; margin-bottom: 12px; display: block;"></i>
+            <b style="font-size: 1rem; color: #f1f5f9;">타임라인 데이터가 없습니다</b><br>
+            <span style="font-size: 0.82rem; color: #94a3b8; display: inline-block; margin-top: 6px;">
+              상단 <strong>[불러오기]</strong> 버튼을 누르거나<br>
+              <code>타임라인.json</code> 파일을 화면에 끌어다 놓으세요.
+            </span>
+          </div>
+        `;
+        return;
+      }
 
       document.getElementById("dataRangeBadge").innerText =
         `${summary.startDate || ""} ~ ${summary.endDate || ""}`;
@@ -106,7 +526,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // 통계 활동 리스트
       const statsList = document.getElementById("activityStatsList");
       statsList.innerHTML = "";
-      summary.activities.forEach((act) => {
+      (summary.activities || []).forEach((act) => {
         const conf = activityConfig[act.type] || activityConfig.UNKNOWN;
         const row = document.createElement("div");
         row.className = "activity-stat-row";
@@ -118,9 +538,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       // 날짜 목록 로드
-      const datesRes = await fetch("/api/dates");
-      const datesData = await datesRes.json();
-      allYears = datesData.years;
+      allYears = datesData && datesData.years ? datesData.years : [];
 
       // 연도 셀렉트 채우기
       const yearSelect = document.getElementById("yearSelect");
@@ -169,7 +587,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // 연도 범위 기본값 설정 (예: 2020 ~ 2025 또는 데이터 범위)
       if (videoStartYearSelect && videoEndYearSelect && allYears.length > 0) {
-        // allYears는 내림차순 정렬 (2026, 2025, ... 2013)
         const sortedAsc = [...allYears].sort((a, b) => a - b);
         const defStart = sortedAsc.includes(2020) ? 2020 : sortedAsc[0];
         const defEnd = sortedAsc.includes(2025) ? 2025 : sortedAsc[sortedAsc.length - 1];
@@ -194,9 +611,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // 3. 연도 변경 시 날짜 갱신
   async function onYearChange(year) {
     try {
-      const res = await fetch(`/api/dates?year=${year}`);
-      const data = await res.json();
-      currentYearDates = data.dates.map((d) => d.date);
+      let data = null;
+      if (await TimelineStore.hasData()) {
+        data = await TimelineStore.getDates(year);
+      } else {
+        const res = await fetch(`/api/dates?year=${year}`);
+        data = await res.json();
+      }
+      currentYearDates = (data.dates || []).map((d) => d.date);
 
       if (currentYearDates.length > 0) {
         // 해당 연도의 가장 최근 날짜 또는 첫 번째 날짜 선택
@@ -221,8 +643,12 @@ document.addEventListener("DOMContentLoaded", () => {
     resetPlayback();
 
     try {
-      const res = await fetch(`/api/day?date=${dateStr}`);
-      dayData = await res.json();
+      if (await TimelineStore.hasData()) {
+        dayData = await TimelineStore.getDay(dateStr);
+      } else {
+        const res = await fetch(`/api/day?date=${dateStr}`);
+        dayData = await res.json();
+      }
 
       renderDayOnMap(dayData);
       renderDaySummary(dayData);
@@ -572,11 +998,15 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("heatPointCount").innerText = "포인트 로딩 중...";
 
     try {
-      let url = `/api/heatmap?year=${year}`;
-      if (month !== "all") url += `&month=${month}`;
-
-      const res = await fetch(url);
-      const data = await res.json();
+      let data = null;
+      if (await TimelineStore.hasData()) {
+        data = await TimelineStore.getHeatmap(year, month);
+      } else {
+        let url = `/api/heatmap?year=${year}`;
+        if (month !== "all") url += `&month=${month}`;
+        const res = await fetch(url);
+        data = await res.json();
+      }
 
       if (heatLayer) {
         map.removeLayer(heatLayer);
@@ -756,8 +1186,9 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       const data = await res.json();
       if (!data.success) {
-        alert("영상 제작 요청 실패: " + (data.error || "알 수 없는 오류"));
+        alert("영상 제작 안내:\n\n" + (data.error || "영상 제작은 PC 로컬 환경(Windows run.bat 또는 make_threads_video.bat)에서 지원됩니다."));
         resetRenderUI();
+        statusCard.style.display = "none";
         return;
       }
 
@@ -766,8 +1197,9 @@ document.addEventListener("DOMContentLoaded", () => {
       startPollingVideoStatus(activeVideoJobId);
     } catch (err) {
       console.error("렌더링 요청 오류:", err);
-      alert("서버 통신 오류가 발생했습니다.");
+      alert("💡 알림: 세로 릴스(9:16) 영상 제작은 고화질 지도 타일 합성 및 FFmpeg 비디오 인코딩이 필요하여 PC 로컬 환경(Windows run.bat 또는 make_threads_video.bat)에서 즉시 생성하실 수 있습니다.\n\n(웹 배포 환경에서는 일별 동선 지도 및 누적 히트맵을 자유롭게 감상하실 수 있습니다.)");
       resetRenderUI();
+      statusCard.style.display = "none";
     }
   });
 
@@ -1012,33 +1444,53 @@ document.addEventListener("DOMContentLoaded", () => {
     confirmUploadBtn.disabled = true;
     cancelUploadBtn.disabled = true;
     uploadProgressBox.style.display = "flex";
-    document.getElementById("uploadStatusText").innerText = "서버로 전송 및 데이터베이스 인덱싱 중입니다...";
+    const statusText = document.getElementById("uploadStatusText");
+    statusText.innerText = "파일 준비 중...";
 
     try {
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: selectedFile,
+      const stats = await TimelineStore.parseAndImport(selectedFile, (p) => {
+        statusText.innerText = `${p.text} (${p.percent}%)`;
       });
 
-      const data = await res.json();
-      if (data.success) {
-        alert(`업로드 완료!\n총 ${data.stats.dates.toLocaleString()}일, ${data.stats.points.toLocaleString()}개 위치 포인트가 성공적으로 갱신되었습니다.`);
-        closeUploadModal();
-        // 전체 화면 리프레시
-        loadInitialData();
-      } else {
-        alert("업로드 실패: " + (data.error || "알 수 없는 오류"));
-      }
+      alert(`✅ 타임라인 데이터 불러오기 완료!\n\n- 기록 일수: ${stats.stats.dates.toLocaleString()}일\n- 위치 포인트: ${stats.stats.points.toLocaleString()}개\n- 총 주행/이동거리: ${stats.stats.distanceKm.toLocaleString()} km\n\n브라우저 로컬 저장소(IndexedDB)에 안전하게 저장되어 새로고침하거나 오프라인에서도 유지됩니다.`);
+      closeUploadModal();
+      // 전체 화면 리프레시
+      await loadInitialData();
     } catch (err) {
-      console.error("업로드 오류:", err);
-      alert("업로드 중 오류가 발생했습니다: " + err);
+      console.error("업로드/파싱 오류:", err);
+      alert("타임라인 파일 분석 중 오류가 발생했습니다:\n" + err.message);
     } finally {
       confirmUploadBtn.disabled = false;
       cancelUploadBtn.disabled = false;
       uploadProgressBox.style.display = "none";
+    }
+  });
+
+  // 데이터 초기화 버튼
+  const clearDataBtn = document.getElementById("clearDataBtn");
+  if (clearDataBtn) {
+    clearDataBtn.addEventListener("click", async () => {
+      if (confirm("브라우저 로컬 저장소에 저장된 타임라인 데이터를 모두 삭제하시겠습니까?")) {
+        await TimelineStore.clearAll();
+        closeUploadModal();
+        await loadInitialData();
+        alert("타임라인 데이터가 초기화되었습니다.");
+      }
+    });
+  }
+
+  // 전체 화면 드래그 & 드롭 지원
+  window.addEventListener("dragover", (e) => {
+    e.preventDefault();
+  });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (file.name.endsWith(".json")) {
+        openUploadModal();
+        handleFileSelected(file);
+      }
     }
   });
 
