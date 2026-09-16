@@ -537,9 +537,5 @@ def run_server():
         httpd.server_close()
 
 
-# Vercel Serverless Function 진입점 (Top-level handler & app export)
-handler = TimelineRequestHandler
-app = TimelineRequestHandler
-
 if __name__ == "__main__":
     run_server()
