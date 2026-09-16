@@ -1,0 +1,29 @@
+{
+  "name": "타임라인 동선 지도",
+  "short_name": "동선지도",
+  "description": "구글 타임라인 JSON 기반 나의 여행 동선 시각화 및 릴스 세로 영상 제작기",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121826",
+  "theme_color": "#e90064",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/static/favicon-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

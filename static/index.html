@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>내 동선 타임라인 지도 (Timeline Tracker)</title>
+
+  <meta name="theme-color" content="#e90064" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="동선지도" />
+
+  <!-- Favicon & PWA Icons (배경 투명, 텍스트 없는 고화질 아이콘) -->
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" />
+  <link rel="manifest" href="/static/manifest.json" />
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- FontAwesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <!-- Pretendard Font -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 좌측 사이드바 -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <img src="/static/favicon-32x32.png" alt="앱 아이콘" class="app-logo-img" />
+          <h1>타임라인 동선 지도</h1>
+        </div>
+        <div class="header-actions">
+          <button id="installAppBtn" class="btn btn-sm btn-install" style="display: none;" title="PC/스마트폰에 앱으로 설치">
+            <i class="fa-solid fa-download"></i> 앱 설치
+          </button>
+          <button id="openUploadBtn" class="btn btn-sm btn-outline" title="타임라인 JSON 파일 업로드">
+            <i class="fa-solid fa-file-arrow-up"></i> 불러오기
+          </button>
+        </div>
+      </div>
+      <div class="date-badge-wrapper">
+        <div class="date-badge" id="dataRangeBadge">데이터 로딩 중...</div>
+      </div>
+
+      <!-- 모드 탭 -->
+      <div class="tab-nav">
+        <button class="tab-btn active" data-tab="daily">
+          <i class="fa-solid fa-route"></i> 일별 동선
+        </button>
+        <button class="tab-btn" data-tab="video">
+          <i class="fa-solid fa-video"></i> 세로 영상 제작
+        </button>
+        <button class="tab-btn" data-tab="heatmap">
+          <i class="fa-solid fa-fire"></i> 누적 히트맵
+        </button>
+        <button class="tab-btn" data-tab="stats">
+          <i class="fa-solid fa-chart-pie"></i> 통계
+        </button>
+      </div>
+
+      <!-- 탭 1: 일별 동선 패널 -->
+      <div class="tab-content active" id="tab-daily">
+        <div class="control-box">
+          <div class="filter-group">
+            <label for="yearSelect"><i class="fa-regular fa-calendar"></i> 연도 선택</label>
+            <select id="yearSelect" class="form-select"></select>
+          </div>
+
+          <div class="filter-group">
+            <label for="dateSelect"><i class="fa-regular fa-calendar-check"></i> 날짜 선택</label>
+            <div class="date-picker-row">
+              <input type="date" id="dateInput" class="form-control" />
+              <button id="prevDayBtn" class="btn btn-icon" title="이전 날짜"><i class="fa-solid fa-chevron-left"></i></button>
+              <button id="nextDayBtn" class="btn btn-icon" title="다음 날짜"><i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 일별 요약 카드 -->
+        <div class="day-summary-card" id="daySummaryCard">
+          <div class="summary-header">
+            <h3 id="currentDateTitle">날짜를 선택하세요</h3>
+          </div>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <span class="label">총 이동거리</span>
+              <span class="value" id="summaryDistance">0 km</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">방문 장소</span>
+              <span class="value" id="summaryVisits">0 곳</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">기록 구간</span>
+              <span class="value" id="summarySegments">0 개</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">좌표 포인트</span>
+              <span class="value" id="summaryPoints">0 개</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 재생 컨트롤러 -->
+        <div class="player-panel" id="playerPanel">
+          <div class="player-controls">
+            <button id="playBtn" class="btn btn-primary btn-sm">
+              <i class="fa-solid fa-play"></i> 재생
+            </button>
+            <button id="resetPlayBtn" class="btn btn-secondary btn-sm">
+              <i class="fa-solid fa-rotate-left"></i> 처음으로
+            </button>
+            <div class="speed-selector">
+              <span>속도:</span>
+              <select id="playbackSpeed" class="form-select-sm">
+                <option value="1">1x</option>
+                <option value="3" selected>3x</option>
+                <option value="5">5x</option>
+                <option value="10">10x</option>
+                <option value="20">20x</option>
+              </select>
+            </div>
+          </div>
+          <div class="slider-container">
+            <input type="range" id="timelineSlider" min="0" max="100" value="0" />
+            <div class="time-label" id="currentTimeLabel">00:00:00</div>
+          </div>
+        </div>
+
+        <!-- 타임라인 상세 리스트 -->
+        <div class="timeline-list-header">
+          <span><i class="fa-solid fa-clock-rotate-left"></i> 시간대별 동선 기록</span>
+        </div>
+        <div class="timeline-list" id="timelineList">
+          <div class="empty-state">기록을 불러오는 중입니다...</div>
+        </div>
+      </div>
+
+      <!-- 탭: 세로 영상 제작 패널 -->
+      <div class="tab-content" id="tab-video">
+        <div class="control-box">
+          <div class="section-title">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Reels / Shorts 동선 비디오
+          </div>
+          <p class="section-desc">지정한 기간 동안의 여행 동선을 9:16 세로형 감성 영상(MP4)으로 제작합니다.</p>
+
+          <!-- 기간 설정 모드 선택 -->
+          <div class="filter-group">
+            <label><i class="fa-solid fa-calendar-week"></i> 제작 기간 모드</label>
+            <div class="preset-pill-group" id="videoModeGroup">
+              <button class="pill-btn active" data-mode="preset">단일 연도</button>
+              <button class="pill-btn" data-mode="year_range">연도 범위 (예: 2020~2025)</button>
+              <button class="pill-btn" data-mode="custom_date">상세 날짜 직접 지정</button>
+            </div>
+          </div>
+
+          <!-- 모드 1: 단일 연도 선택 -->
+          <div class="filter-group" id="videoSingleYearRow">
+            <label for="videoYearSelect"><i class="fa-regular fa-calendar"></i> 대상 연도</label>
+            <select id="videoYearSelect" class="form-select"></select>
+          </div>
+
+          <!-- 모드 2: 연도 범위 선택 (예: 2020 ~ 2025) -->
+          <div class="filter-group" id="videoYearRangeRow" style="display: none;">
+            <label><i class="fa-solid fa-arrows-left-right-to-line"></i> 연도 범위 지정</label>
+            <div class="date-range-row">
+              <select id="videoStartYearSelect" class="form-select"></select>
+              <span class="range-sep">~</span>
+              <select id="videoEndYearSelect" class="form-select"></select>
+            </div>
+          </div>
+
+          <!-- 모드 3: 상세 날짜 직접 지정 (YYYY-MM-DD) -->
+          <div class="filter-group" id="videoCustomDateRow" style="display: none;">
+            <label><i class="fa-regular fa-calendar-days"></i> 시작일 ~ 종료일</label>
+            <div class="date-range-row">
+              <input type="date" id="videoStartDate" class="form-control" />
+              <span class="range-sep">~</span>
+              <input type="date" id="videoEndDate" class="form-control" />
+            </div>
+          </div>
+
+          <!-- 카메라 모드 -->
+          <div class="filter-group">
+            <label for="videoCameraSelect"><i class="fa-solid fa-camera"></i> 화면 스타일</label>
+            <select id="videoCameraSelect" class="form-select">
+              <option value="korea" selected>대한민국 전체 고정 (추천: 확대 없이 한눈에)</option>
+              <option value="dynamic">동적 추적 (이동 경로를 따라 카메라 이동)</option>
+              <option value="steady">안정적 팔로우 (부드러운 시점)</option>
+            </select>
+          </div>
+
+          <!-- 영상 제목 -->
+          <div class="filter-group">
+            <label for="videoTitleInput"><i class="fa-solid fa-heading"></i> 상단 카드 제목</label>
+            <input type="text" id="videoTitleInput" class="form-control" placeholder="예: 대한민국 여행 동선" value="대한민국 여행 동선" />
+          </div>
+
+          <!-- 영상 길이 및 화질 -->
+          <div class="row-2col">
+            <div class="filter-group">
+              <label for="videoDurationSelect"><i class="fa-solid fa-clock"></i> 영상 길이</label>
+              <select id="videoDurationSelect" class="form-select">
+                <option value="15">15초 (릴스/숏폼 추천)</option>
+                <option value="20" selected>20초 (표준)</option>
+                <option value="30">30초 (상세)</option>
+                <option value="45">45초</option>
+              </select>
+            </div>
+            <div class="filter-group">
+              <label for="videoResSelect"><i class="fa-solid fa-display"></i> 화질</label>
+              <select id="videoResSelect" class="form-select">
+                <option value="720" selected>720p (빠른 제작)</option>
+                <option value="1080">1080p (고화질)</option>
+              </select>
+            </div>
+          </div>
+
+          <button id="startRenderBtn" class="btn btn-primary w-100 btn-render">
+            <i class="fa-solid fa-play"></i> 세로 동선 영상 만들기
+          </button>
+        </div>
+
+        <!-- 렌더링 진행 상태 카드 -->
+        <div class="render-status-card" id="renderStatusCard" style="display: none;">
+          <div class="render-header">
+            <div class="spinner-icon" id="renderSpinner"><i class="fa-solid fa-circle-notch fa-spin"></i></div>
+            <span id="renderStatusText">영상 렌더링 중...</span>
+          </div>
+          <div class="render-progress-bar">
+            <div class="progress-fill" id="renderProgressFill" style="width: 20%;"></div>
+          </div>
+          <p class="render-message" id="renderMessageText">지도 타일을 다운로드하고 프레임을 생성하고 있습니다.</p>
+        </div>
+
+        <!-- 완성된 비디오 미리보기 및 다운로드 카드 -->
+        <div class="video-result-card" id="videoResultCard" style="display: none;">
+          <div class="video-result-header">
+            <h4><i class="fa-solid fa-circle-check"></i> 영상 완성!</h4>
+          </div>
+          <div class="video-preview-wrapper">
+            <video id="videoPlayer" controls playsinline></video>
+          </div>
+          <div class="video-result-actions">
+            <a id="downloadVideoBtn" class="btn btn-success w-100" download>
+              <i class="fa-solid fa-download"></i> MP4 영상 다운로드
+            </a>
+          </div>
+        </div>
+
+        <!-- 최근 제작 영상 목록 -->
+        <div class="recent-videos-box">
+          <div class="recent-header">
+            <span><i class="fa-solid fa-clock-rotate-left"></i> 최근 생성된 영상</span>
+            <button id="refreshVideosBtn" class="btn-icon-sub"><i class="fa-solid fa-arrows-rotate"></i></button>
+          </div>
+          <div class="recent-video-list" id="recentVideoList"></div>
+        </div>
+      </div>
+
+      <!-- 탭 3: 히트맵 패널 -->
+      <div class="tab-content" id="tab-heatmap">
+        <div class="control-box">
+          <div class="filter-group">
+            <label for="heatYearSelect"><i class="fa-regular fa-calendar"></i> 연도 선택</label>
+            <select id="heatYearSelect" class="form-select">
+              <option value="all">전체 기간 (누적)</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="heatMonthSelect"><i class="fa-regular fa-calendar-days"></i> 월 선택</label>
+            <select id="heatMonthSelect" class="form-select">
+              <option value="all">전체 (1~12월)</option>
+              <option value="1">1월</option>
+              <option value="2">2월</option>
+              <option value="3">3월</option>
+              <option value="4">4월</option>
+              <option value="5">5월</option>
+              <option value="6">6월</option>
+              <option value="7">7월</option>
+              <option value="8">8월</option>
+              <option value="9">9월</option>
+              <option value="10">10월</option>
+              <option value="11">11월</option>
+              <option value="12">12월</option>
+            </select>
+          </div>
+          <button id="applyHeatmapBtn" class="btn btn-primary w-100">
+            <i class="fa-solid fa-arrows-rotate"></i> 히트맵 불러오기
+          </button>
+        </div>
+        <div class="heatmap-info">
+          <p><i class="fa-solid fa-circle-info"></i> 최대 25,000개의 위치 포인트를 분석하여 자주 머무르고 이동한 곳을 붉은색 밀도로 표시합니다.</p>
+          <div class="heat-point-count" id="heatPointCount">표시된 포인트: 0개</div>
+        </div>
+      </div>
+
+      <!-- 탭 3: 통계 패널 -->
+      <div class="tab-content" id="tab-stats">
+        <div class="stats-container">
+          <div class="stat-card">
+            <div class="stat-icon"><i class="fa-solid fa-calendar-days"></i></div>
+            <div class="stat-meta">
+              <div class="stat-num" id="statTotalDays">-</div>
+              <div class="stat-label">총 기록 일수</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon distance"><i class="fa-solid fa-road"></i></div>
+            <div class="stat-meta">
+              <div class="stat-num" id="statTotalDistance">-</div>
+              <div class="stat-label">총 이동거리 (km)</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon visit"><i class="fa-solid fa-location-dot"></i></div>
+            <div class="stat-meta">
+              <div class="stat-num" id="statTotalVisits">-</div>
+              <div class="stat-label">체류/방문 횟수</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon point"><i class="fa-solid fa-bullseye"></i></div>
+            <div class="stat-meta">
+              <div class="stat-num" id="statTotalPoints">-</div>
+              <div class="stat-label">누적 GPS 좌표 수</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="activity-stats-box">
+          <h4><i class="fa-solid fa-chart-column"></i> 주요 이동 수단별 비율</h4>
+          <div id="activityStatsList" class="activity-stats-list"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 우측 메인 지도 영역 -->
+    <main id="map-container">
+      <div id="map"></div>
+
+      <!-- 지도 컨트롤 오버레이 (우측 상단) -->
+      <div class="map-overlay-controls">
+        <div class="tile-selector">
+          <button class="tile-btn active" data-tile="osm" title="일반 지도">일반</button>
+          <button class="tile-btn" data-tile="carto-dark" title="다크 모드">다크</button>
+          <button class="tile-btn" data-tile="satellite" title="위성 지도">위성</button>
+        </div>
+        <button id="fitBoundsBtn" class="control-btn" title="동선 영역으로 화면 맞춤">
+          <i class="fa-solid fa-compress"></i>
+        </button>
+      </div>
+
+      <!-- 범례 (우측 하단) -->
+      <div class="legend-panel">
+        <div class="legend-title"><i class="fa-solid fa-layer-group"></i> 이동 수단 범례</div>
+        <div class="legend-items">
+          <span class="legend-tag walking"><i class="fa-solid fa-person-walking"></i> 도보</span>
+          <span class="legend-tag vehicle"><i class="fa-solid fa-car"></i> 승용차</span>
+          <span class="legend-tag bus"><i class="fa-solid fa-bus"></i> 버스</span>
+          <span class="legend-tag subway"><i class="fa-solid fa-train-subway"></i> 지하철</span>
+          <span class="legend-tag train"><i class="fa-solid fa-train"></i> 기차</span>
+          <span class="legend-tag cycling"><i class="fa-solid fa-bicycle"></i> 자전거</span>
+          <span class="legend-tag flying"><i class="fa-solid fa-plane"></i> 비행기</span>
+          <span class="legend-tag visit"><i class="fa-solid fa-location-dot"></i> 방문지</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- JSON 파일 업로드 모달 -->
+  <div class="modal-backdrop" id="uploadModal" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-cloud-arrow-up"></i> 타임라인 JSON 파일 업로드
+        </div>
+        <button class="modal-close-btn" id="closeUploadModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Google Takeout(위치 기록) 또는 스마트폰에서 내보낸 <code>타임라인.json</code> 파일을 선택하거나 드래그하여 올려주세요.
+        </p>
+        <div class="drop-zone" id="dropZone">
+          <i class="fa-regular fa-file-code drop-icon"></i>
+          <p class="drop-text">여기로 파일을 끌어다 놓거나 <strong>클릭하여 선택</strong>하세요</p>
+          <span class="file-name-label" id="selectedFileName">선택된 파일 없음</span>
+          <input type="file" id="fileInput" accept=".json" style="display: none;" />
+        </div>
+
+        <div class="upload-progress-box" id="uploadProgressBox" style="display: none;">
+          <div class="spinner-inline"><i class="fa-solid fa-spinner fa-spin"></i></div>
+          <span id="uploadStatusText">파일 분석 및 데이터베이스 변환 중...</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="cancelUploadBtn">취소</button>
+        <button class="btn btn-primary" id="confirmUploadBtn" disabled>
+          <i class="fa-solid fa-check"></i> 데이터 변환 및 적용
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet Heatmap Plugin -->
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <!-- Main Script -->
+  <script src="/static/app.js"></script>
+</body>
+</html>

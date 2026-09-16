@@ -1,0 +1,36 @@
+# Personal data & large files
+*.json
+!static/manifest.json
+*.db
+*.sqlite
+*.sqlite3
+temp_uploaded_timeline.json
+
+# Video outputs
+*.mp4
+generated_videos/
+korea_overview_reel.mp4
+threads_style_reel.mp4
+
+# Python & Environment
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+env/
+venv/
+*.egg-info/
+
+# Temporary directories & tests
+temp_repo/
+test_*.png
+sample_*.png
+check_*.png
+final_*.png
+tile_*.png
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
