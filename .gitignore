@@ -1,6 +1,7 @@
 # Personal data & large files
 *.json
 !static/manifest.json
+!vercel.json
 *.db
 *.sqlite
 *.sqlite3

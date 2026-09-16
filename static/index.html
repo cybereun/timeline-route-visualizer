@@ -39,6 +39,9 @@
           <button id="installAppBtn" class="btn btn-sm btn-install" style="display: none;" title="PC/스마트폰에 앱으로 설치">
             <i class="fa-solid fa-download"></i> 앱 설치
           </button>
+          <button id="openHelpBtn" class="btn btn-sm btn-outline btn-help" title="기종별 Google 타임라인 내보내기 도움말">
+            <i class="fa-solid fa-circle-question"></i> 도움말
+          </button>
           <button id="openUploadBtn" class="btn btn-sm btn-outline" title="타임라인 JSON 파일 업로드">
             <i class="fa-solid fa-file-arrow-up"></i> 불러오기
           </button>
@@ -386,6 +389,7 @@
       <div class="modal-body">
         <p class="modal-desc">
           Google Takeout(위치 기록) 또는 스마트폰에서 내보낸 <code>타임라인.json</code> 파일을 선택하거나 드래그하여 올려주세요.
+          <a href="#" id="uploadHelpLink" class="inline-help-link"><i class="fa-solid fa-circle-question"></i> 기종별 내보내기 방법 보기</a>
         </p>
         <div class="drop-zone" id="dropZone">
           <i class="fa-regular fa-file-code drop-icon"></i>
@@ -403,6 +407,117 @@
         <button class="btn btn-secondary" id="cancelUploadBtn">취소</button>
         <button class="btn btn-primary" id="confirmUploadBtn" disabled>
           <i class="fa-solid fa-check"></i> 데이터 변환 및 적용
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 도움말 모달 (기종별 타임라인 JSON 내보내기 가이드) -->
+  <div class="modal-backdrop" id="helpModal" style="display: none;">
+    <div class="modal-dialog modal-dialog-lg">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-circle-question" style="color: #38bdf8;"></i> Google 타임라인 파일 가져오기 가이드
+        </div>
+        <button class="modal-close-btn" id="closeHelpModalBtn">&times;</button>
+      </div>
+      <div class="modal-body help-modal-body">
+        <p class="modal-desc">
+          Google 지도에 저장된 이동 기록을 앱에서 시각화하려면 먼저 타임라인 데이터를 JSON 파일로 내보내기 해야 합니다.
+        </p>
+
+        <!-- 기종 선택 탭 -->
+        <div class="help-device-tabs">
+          <button class="device-tab-btn active" data-device="galaxy">
+            <i class="fa-brands fa-android"></i> 🤖 갤럭시 / 안드로이드
+          </button>
+          <button class="device-tab-btn" data-device="iphone">
+            <i class="fa-brands fa-apple"></i> 🍎 아이폰 / iPad
+          </button>
+        </div>
+
+        <!-- 탭 1: 갤럭시 / 안드로이드 -->
+        <div class="device-guide-content active" id="guide-galaxy">
+          <div class="guide-steps-card">
+            <h4 class="guide-card-title"><i class="fa-solid fa-list-ol"></i> 내보내기 단계</h4>
+            <ol class="guide-step-list">
+              <li>휴대폰의 <strong>설정</strong> 앱을 엽니다.</li>
+              <li><strong>위치</strong>를 선택합니다.</li>
+              <li><strong>위치 서비스</strong>를 선택합니다.</li>
+              <li><strong>타임라인</strong>을 선택합니다.</li>
+              <li><strong>타임라인 데이터 내보내기</strong>를 누릅니다.</li>
+              <li><strong>계속</strong>을 선택합니다.</li>
+              <li>파일을 저장할 위치를 선택합니다.</li>
+              <li><strong>저장</strong>을 누릅니다.</li>
+            </ol>
+            <div class="guide-tip">
+              <i class="fa-solid fa-circle-info"></i> 내보내기가 완료되면 타임라인 데이터가 JSON 파일로 저장됩니다.
+            </div>
+          </div>
+          <div class="guide-route-box">
+            <span class="route-label"><i class="fa-solid fa-signs-post"></i> 경로 요약</span>
+            <div class="route-path">
+              <span>설정</span> <i class="fa-solid fa-chevron-right"></i>
+              <span>위치</span> <i class="fa-solid fa-chevron-right"></i>
+              <span>위치 서비스</span> <i class="fa-solid fa-chevron-right"></i>
+              <span>타임라인</span> <i class="fa-solid fa-chevron-right"></i>
+              <span class="route-highlight">타임라인 데이터 내보내기</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 탭 2: 아이폰 / iPad -->
+        <div class="device-guide-content" id="guide-iphone" style="display: none;">
+          <div class="guide-steps-card">
+            <h4 class="guide-card-title"><i class="fa-solid fa-list-ol"></i> 내보내기 단계</h4>
+            <ol class="guide-step-list">
+              <li><strong>Google Maps</strong> 앱을 실행합니다.</li>
+              <li>오른쪽 위의 <strong>프로필 사진</strong>을 누릅니다.</li>
+              <li><strong>설정</strong>을 선택합니다.</li>
+              <li><strong>개인 콘텐츠(Personal content)</strong>를 선택합니다.</li>
+              <li>타임라인 설정 섹션으로 스크롤합니다.</li>
+              <li><strong>타임라인 데이터 내보내기</strong>를 선택합니다.</li>
+              <li>화면의 안내에 따라 백업을 진행합니다.</li>
+              <li>파일 앱 또는 원하는 위치에 저장합니다.</li>
+            </ol>
+          </div>
+          <div class="guide-route-box">
+            <span class="route-label"><i class="fa-solid fa-signs-post"></i> 경로 요약</span>
+            <div class="route-path">
+              <span>Google Maps 앱</span> <i class="fa-solid fa-chevron-right"></i>
+              <span>프로필 아이콘</span> <i class="fa-solid fa-chevron-right"></i>
+              <span>설정</span> <i class="fa-solid fa-chevron-right"></i>
+              <span>개인 콘텐츠</span> <i class="fa-solid fa-chevron-right"></i>
+              <span class="route-highlight">타임라인 데이터 내보내기</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 공통 파일명 및 개인정보 보안 안내 -->
+        <div class="help-info-grid">
+          <div class="info-card info-filename">
+            <div class="info-card-header">
+              <i class="fa-regular fa-folder-open"></i> <strong>📁 파일명 안내</strong>
+            </div>
+            <p>
+              보통 내보내기한 파일 이름은 다음과 같습니다:<br>
+              <code>location-history.json</code> 또는 사용자 지정 이름의 <code>.json</code> 파일
+            </p>
+          </div>
+          <div class="info-card info-privacy">
+            <div class="info-card-header">
+              <i class="fa-solid fa-shield-halved"></i> <strong>🔒 개인정보 보안 안내</strong>
+            </div>
+            <p>
+              타임라인 데이터는 외부 서버로 전송되지 않으며, 사용자의 브라우저 및 로컬 데이터베이스에서만 안전하게 처리됩니다.
+            </p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="closeHelpModalFooterBtn">닫기</button>
+        <button class="btn btn-primary" id="helpGoUploadBtn">
+          <i class="fa-solid fa-file-arrow-up"></i> 타임라인 파일 불러오기
         </button>
       </div>
     </div>

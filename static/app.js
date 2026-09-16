@@ -886,13 +886,69 @@ document.addEventListener("DOMContentLoaded", () => {
   const uploadProgressBox = document.getElementById("uploadProgressBox");
   let selectedFile = null;
 
-  openUploadBtn.addEventListener("click", () => {
+  // 도움말 모달 엘리먼트
+  const helpModal = document.getElementById("helpModal");
+  const openHelpBtn = document.getElementById("openHelpBtn");
+  const closeHelpModalBtn = document.getElementById("closeHelpModalBtn");
+  const closeHelpModalFooterBtn = document.getElementById("closeHelpModalFooterBtn");
+  const uploadHelpLink = document.getElementById("uploadHelpLink");
+  const helpGoUploadBtn = document.getElementById("helpGoUploadBtn");
+  const deviceTabBtns = document.querySelectorAll(".device-tab-btn");
+  const guideGalaxy = document.getElementById("guide-galaxy");
+  const guideIphone = document.getElementById("guide-iphone");
+
+  function openHelpModal() {
+    if (helpModal) helpModal.style.display = "flex";
+  }
+
+  function closeHelpModal() {
+    if (helpModal) helpModal.style.display = "none";
+  }
+
+  if (openHelpBtn) openHelpBtn.addEventListener("click", openHelpModal);
+  if (closeHelpModalBtn) closeHelpModalBtn.addEventListener("click", closeHelpModal);
+  if (closeHelpModalFooterBtn) closeHelpModalFooterBtn.addEventListener("click", closeHelpModal);
+
+  if (uploadHelpLink) {
+    uploadHelpLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      closeUploadModal();
+      openHelpModal();
+    });
+  }
+
+  if (helpGoUploadBtn) {
+    helpGoUploadBtn.addEventListener("click", () => {
+      closeHelpModal();
+      openUploadModal();
+    });
+  }
+
+  // 기종 탭 전환
+  deviceTabBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      deviceTabBtns.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const device = btn.getAttribute("data-device");
+      if (device === "galaxy") {
+        guideGalaxy.style.display = "flex";
+        guideIphone.style.display = "none";
+      } else {
+        guideGalaxy.style.display = "none";
+        guideIphone.style.display = "flex";
+      }
+    });
+  });
+
+  function openUploadModal() {
     uploadModal.style.display = "flex";
     selectedFile = null;
     selectedFileName.innerText = "선택된 파일 없음";
     confirmUploadBtn.disabled = true;
     uploadProgressBox.style.display = "none";
-  });
+  }
+
+  openUploadBtn.addEventListener("click", openUploadModal);
 
   function closeUploadModal() {
     uploadModal.style.display = "none";
@@ -900,6 +956,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
   closeUploadModalBtn.addEventListener("click", closeUploadModal);
   cancelUploadBtn.addEventListener("click", closeUploadModal);
+
+  // 모달 배경 클릭 시 닫기
+  window.addEventListener("click", (e) => {
+    if (e.target === uploadModal) closeUploadModal();
+    if (e.target === helpModal) closeHelpModal();
+  });
+
+  // ESC 키 누를 때 모달 닫기
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeUploadModal();
+      closeHelpModal();
+    }
+  });
 
   dropZone.addEventListener("click", () => fileInput.click());
 

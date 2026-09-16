@@ -13,9 +13,16 @@ import webbrowser
 
 PORT = 8765
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "timeline.db")
+IS_VERCEL = bool(os.environ.get("VERCEL"))
+
+if IS_VERCEL:
+    DB_PATH = "/tmp/timeline.db"
+    VIDEOS_DIR = "/tmp/generated_videos"
+else:
+    DB_PATH = os.path.join(BASE_DIR, "timeline.db")
+    VIDEOS_DIR = os.path.join(BASE_DIR, "generated_videos")
+
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-VIDEOS_DIR = os.path.join(BASE_DIR, "generated_videos")
 os.makedirs(VIDEOS_DIR, exist_ok=True)
 
 # 렌더링 작업 상태 관리 {job_id: {status, progress, message, file, created_at, error}}
@@ -25,6 +32,11 @@ RENDER_JOBS = {}
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='segments'")
+    if not cursor.fetchone():
+        import parse_timeline
+        parse_timeline.init_db(conn)
     return conn
 
 
@@ -476,9 +488,11 @@ class TimelineRequestHandler(BaseHTTPRequestHandler):
 
 def run_server():
     if not os.path.exists(DB_PATH):
-        print(f"오류: DB 파일이 없습니다: {DB_PATH}")
-        print("먼저 parse_timeline.py를 실행하여 DB를 생성하세요.")
-        sys.exit(1)
+        print(f"알림: DB 파일({DB_PATH})이 없습니다. 기본 빈 데이터베이스를 초기화합니다.")
+        conn = sqlite3.connect(DB_PATH)
+        import parse_timeline
+        parse_timeline.init_db(conn)
+        conn.close()
 
     auto_open = "--no-browser" not in sys.argv
 
@@ -502,6 +516,10 @@ def run_server():
         print("\n서버를 종료합니다.")
         httpd.server_close()
 
+
+# Vercel Serverless Function 진입점 (Top-level handler & app export)
+handler = TimelineRequestHandler
+app = TimelineRequestHandler
 
 if __name__ == "__main__":
     run_server()
