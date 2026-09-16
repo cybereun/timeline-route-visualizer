@@ -46,8 +46,27 @@ class TimelineRequestHandler(BaseHTTPRequestHandler):
         # 콘솔 로그 간소화
         pass
 
+    def get_effective_path(self):
+        # Vercel Serverless Function에서 rewrites 후의 원래 요청 경로 복원
+        matched = self.headers.get("x-matched-path")
+        if matched and matched.startswith("/api/"):
+            return matched
+        forwarded = self.headers.get("x-forwarded-uri")
+        if forwarded and forwarded.startswith("/api/"):
+            return forwarded
+        return self.path
+
+    def do_OPTIONS(self):
+        # CORS Preflight 대응
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_GET(self):
-        parsed_url = urllib.parse.urlparse(self.path)
+        raw_path = self.get_effective_path()
+        parsed_url = urllib.parse.urlparse(raw_path)
         path = parsed_url.path
         query = urllib.parse.parse_qs(parsed_url.query)
 
@@ -77,7 +96,8 @@ class TimelineRequestHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def do_POST(self):
-        parsed_url = urllib.parse.urlparse(self.path)
+        raw_path = self.get_effective_path()
+        parsed_url = urllib.parse.urlparse(raw_path)
         path = parsed_url.path
 
         if path == "/api/video/render":
