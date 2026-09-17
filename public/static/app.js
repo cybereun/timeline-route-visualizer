@@ -1065,8 +1065,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // 11. 세로 영상 제작 (Reels / Shorts) 기능
-  let activeVideoJobId = null;
-  let videoPollInterval = null;
+  let currentBrowserVideo = null;
 
   // 기간 설정 모드 탭 제어 (단일 연도 / 연도 범위 / 상세 날짜)
   const videoSingleYearRow = document.getElementById("videoSingleYearRow");
@@ -1117,7 +1116,44 @@ document.addEventListener("DOMContentLoaded", () => {
     videoTitleInput.value = `${sy}~${ey}년 여행 동선`;
   });
 
-  // 영상 생성 요청 버튼
+  async function loadSelectedVideoDays(payload, onProgress) {
+    const usesLocalData = await TimelineStore.hasData();
+    let dateData;
+    if (usesLocalData) {
+      dateData = await TimelineStore.getDates();
+    } else {
+      const response = await fetch("/api/dates");
+      if (!response.ok) throw new Error("타임라인 날짜 목록을 불러오지 못했습니다.");
+      dateData = await response.json();
+      if (dateData.error) throw new Error(dateData.error);
+    }
+
+    const startDate = payload.start_date || `${payload.year}-01-01`;
+    const endDate = payload.end_date || `${payload.year}-12-31`;
+    const dates = (dateData.dates || [])
+      .map((entry) => entry.date)
+      .filter((date) => date >= startDate && date <= endDate);
+    if (!dates.length) throw new Error("선택한 기간의 타임라인 기록이 없습니다. 먼저 타임라인 JSON을 불러와 주세요.");
+
+    const days = [];
+    const batchSize = 8;
+    for (let index = 0; index < dates.length; index += batchSize) {
+      const batch = dates.slice(index, index + batchSize);
+      const loaded = await Promise.all(batch.map(async (date) => {
+        if (usesLocalData) return TimelineStore.getDay(date);
+        const response = await fetch(`/api/day?date=${encodeURIComponent(date)}`);
+        if (!response.ok) throw new Error(`${date} 경로 데이터를 불러오지 못했습니다.`);
+        const day = await response.json();
+        if (day.error) throw new Error(day.error);
+        return day;
+      }));
+      days.push(...loaded);
+      onProgress(5 + Math.round(((index + batch.length) / dates.length) * 20), `경로 데이터를 읽는 중 (${index + batch.length}/${dates.length}일)`);
+    }
+    return days;
+  }
+
+  // 브라우저에서 경로를 그리고 MediaRecorder로 영상을 인코딩합니다.
   document.getElementById("startRenderBtn").addEventListener("click", async () => {
     const activeModeBtn = document.querySelector("#videoModeGroup .pill-btn.active");
     const mode = activeModeBtn ? activeModeBtn.dataset.mode : "preset";
@@ -1171,35 +1207,59 @@ document.addEventListener("DOMContentLoaded", () => {
     const messageText = document.getElementById("renderMessageText");
 
     startBtn.disabled = true;
-    startBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 제작 진행 중...`;
+    startBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 브라우저에서 제작 중...`;
+    document.getElementById("videoPlayer").pause();
     statusCard.style.display = "flex";
     resultCard.style.display = "none";
-    progressFill.style.width = "15%";
-    statusText.innerText = "영상 제작 요청 중...";
-    messageText.innerText = "지도를 다운로드하고 타임라인 프레임을 생성합니다.";
+    progressFill.style.width = "3%";
+    statusText.innerText = "브라우저 영상 준비 중...";
+    messageText.innerText = "선택한 이동 경로를 브라우저에서 읽고 있습니다.";
+    document.getElementById("renderSpinner").innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i>`;
 
     try {
-      const res = await fetch("/api/video/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const days = await loadSelectedVideoDays(payload, (percent, message) => {
+        progressFill.style.width = `${percent}%`;
+        messageText.innerText = message;
       });
-      const data = await res.json();
-      if (!data.success) {
-        alert("영상 제작 안내:\n\n" + (data.error || "영상 제작은 PC 로컬 환경(Windows run.bat 또는 make_threads_video.bat)에서 지원됩니다."));
-        resetRenderUI();
-        statusCard.style.display = "none";
-        return;
-      }
+      statusText.innerText = "브라우저에서 영상 인코딩 중...";
+      messageText.innerText = "영상 제작이 끝날 때까지 이 탭을 열어 두세요.";
+      const result = await BrowserVideoRenderer.renderVideo({
+        days,
+        title,
+        camera,
+        duration,
+        resolution,
+        onTilesProgress: (progress) => {
+          const percent = 25 + Math.round(progress * 7);
+          progressFill.style.width = `${percent}%`;
+          messageText.innerText = `배경 지도를 준비하는 중 (${Math.round(progress * 100)}%)`;
+        },
+        onProgress: (progress) => {
+          const percent = 32 + Math.round(progress * 67);
+          progressFill.style.width = `${percent}%`;
+          messageText.innerText = `브라우저에서 프레임을 녹화하는 중 (${Math.round(progress * 100)}%). 이 탭을 열어 두세요.`;
+        },
+      });
 
-      activeVideoJobId = data.job_id;
-      // 상태 폴링 시작
-      startPollingVideoStatus(activeVideoJobId);
-    } catch (err) {
-      console.error("렌더링 요청 오류:", err);
-      alert("💡 알림: 세로 릴스(9:16) 영상 제작은 고화질 지도 타일 합성 및 FFmpeg 비디오 인코딩이 필요하여 PC 로컬 환경(Windows run.bat 또는 make_threads_video.bat)에서 즉시 생성하실 수 있습니다.\n\n(웹 배포 환경에서는 일별 동선 지도 및 누적 히트맵을 자유롭게 감상하실 수 있습니다.)");
+      if (currentBrowserVideo) URL.revokeObjectURL(currentBrowserVideo.url);
+      currentBrowserVideo = {
+        url: URL.createObjectURL(result.blob),
+        filename: result.filename,
+        size: result.blob.size,
+      };
+      progressFill.style.width = "100%";
+      statusText.innerText = "영상 제작 완료!";
+      messageText.innerText = `${result.filename} · 브라우저에서 제작했습니다.`;
+      document.getElementById("renderSpinner").innerHTML = `<i class="fa-solid fa-check" style="color: #10b981;"></i>`;
+      showVideoResult(currentBrowserVideo.url, result.filename);
+      await loadRecentVideos();
       resetRenderUI();
-      statusCard.style.display = "none";
+    } catch (err) {
+      console.error("브라우저 영상 제작 오류:", err);
+      statusText.innerText = "영상 제작에 실패했습니다.";
+      messageText.innerText = err.message || "브라우저에서 영상을 만들지 못했습니다.";
+      document.getElementById("renderSpinner").innerHTML = `<i class="fa-solid fa-triangle-exclamation" style="color: #ef4444;"></i>`;
+      resetRenderUI();
     }
   });
 
@@ -1209,74 +1269,43 @@ document.addEventListener("DOMContentLoaded", () => {
     startBtn.innerHTML = `<i class="fa-solid fa-play"></i> 세로 동선 영상 만들기`;
   }
 
-  function startPollingVideoStatus(jobId) {
-    if (videoPollInterval) clearInterval(videoPollInterval);
-
-    let progressVal = 20;
-    videoPollInterval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/video/status?job_id=${jobId}`);
-        const data = await res.json();
-        if (!data.success || !data.job) return;
-
-        const job = data.job;
-        const statusText = document.getElementById("renderStatusText");
-        const messageText = document.getElementById("renderMessageText");
-        const progressFill = document.getElementById("renderProgressFill");
-
-        if (job.status === "processing") {
-          progressVal = Math.min(90, progressVal + 5);
-          progressFill.style.width = `${progressVal}%`;
-          statusText.innerText = `영상 렌더링 중 (${progressVal}%)...`;
-          messageText.innerText = job.message || "프레임을 그리는 중입니다...";
-        } else if (job.status === "completed") {
-          clearInterval(videoPollInterval);
-          progressFill.style.width = "100%";
-          statusText.innerText = "영상 제작 완료!";
-          messageText.innerText = "아래에서 영상을 확인하고 다운로드하세요.";
-          document.getElementById("renderSpinner").innerHTML = `<i class="fa-solid fa-check" style="color: #10b981;"></i>`;
-
-          // 결과 카드 표시
-          showVideoResult(job.video_url);
-          resetRenderUI();
-          loadRecentVideos();
-        } else if (job.status === "failed") {
-          clearInterval(videoPollInterval);
-          statusText.innerText = "제작 실패";
-          messageText.innerText = job.error || "렌더링 중 오류가 발생했습니다.";
-          document.getElementById("renderSpinner").innerHTML = `<i class="fa-solid fa-triangle-exclamation" style="color: #ef4444;"></i>`;
-          resetRenderUI();
-        }
-      } catch (e) {
-        console.error("폴링 오류:", e);
-      }
-    }, 2000);
-  }
-
-  function showVideoResult(videoUrl) {
+  function showVideoResult(videoUrl, filename) {
     const resultCard = document.getElementById("videoResultCard");
     const videoPlayer = document.getElementById("videoPlayer");
     const downloadBtn = document.getElementById("downloadVideoBtn");
 
     videoPlayer.src = videoUrl;
     downloadBtn.href = videoUrl;
-    downloadBtn.setAttribute("download", videoUrl.split("/").pop());
+    const downloadName = filename || videoUrl.split("/").pop();
+    downloadBtn.setAttribute("download", downloadName);
+    const format = downloadName.toLowerCase().endsWith(".webm") ? "WebM" : "MP4";
+    downloadBtn.innerHTML = `<i class="fa-solid fa-download"></i> ${format} 영상 다운로드`;
     resultCard.style.display = "flex";
     videoPlayer.play().catch(() => {});
   }
 
   // 최근 생성된 영상 목록 로드
   async function loadRecentVideos() {
+    const listEl = document.getElementById("recentVideoList");
+    let serverVideos = [];
     try {
       const res = await fetch("/api/video/list");
       const data = await res.json();
-      const listEl = document.getElementById("recentVideoList");
-      if (!data.success || !data.videos || data.videos.length === 0) {
-        listEl.innerHTML = `<div class="empty-state" style="padding: 10px; font-size: 0.78rem;">생성된 영상이 없습니다.</div>`;
-        return;
-      }
+      if (data.success && Array.isArray(data.videos)) serverVideos = data.videos;
+    } catch (err) {
+      console.error("영상 목록 로드 실패:", err);
+    }
 
-      listEl.innerHTML = data.videos
+    const videos = [
+      ...(currentBrowserVideo ? [currentBrowserVideo] : []),
+      ...serverVideos,
+    ];
+    if (!videos.length) {
+      listEl.innerHTML = `<div class="empty-state" style="padding: 10px; font-size: 0.78rem;">생성된 영상이 없습니다.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = videos
         .map((v) => {
           const mb = (v.size / (1024 * 1024)).toFixed(1);
           return `
@@ -1286,7 +1315,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <span class="recent-item-size">${mb} MB</span>
               </div>
               <div class="recent-item-actions">
-                <button class="recent-action-btn play-recent-btn" data-url="${v.url}">재생</button>
+                <button class="recent-action-btn play-recent-btn" data-url="${v.url}" data-filename="${v.filename}">재생</button>
                 <a href="${v.url}" class="recent-action-btn" download="${v.filename}">저장</a>
               </div>
             </div>
@@ -1296,12 +1325,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       listEl.querySelectorAll(".play-recent-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
-          showVideoResult(btn.dataset.url);
+          showVideoResult(btn.dataset.url, btn.dataset.filename);
         });
       });
-    } catch (err) {
-      console.error("영상 목록 로드 실패:", err);
-    }
   }
 
   document.getElementById("refreshVideosBtn").addEventListener("click", loadRecentVideos);

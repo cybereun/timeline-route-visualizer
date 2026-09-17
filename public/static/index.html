@@ -151,7 +151,7 @@
           <div class="section-title">
             <i class="fa-solid fa-wand-magic-sparkles"></i> Reels / Shorts 동선 비디오
           </div>
-          <p class="section-desc">지정한 기간 동안의 여행 동선을 9:16 세로형 감성 영상(MP4)으로 제작합니다.</p>
+          <p class="section-desc">지정한 기간 동안의 여행 동선을 9:16 세로형 감성 영상(MP4 또는 WebM)으로 제작합니다.</p>
 
           <!-- 기간 설정 모드 선택 -->
           <div class="filter-group">
@@ -193,9 +193,9 @@
           <div class="filter-group">
             <label for="videoCameraSelect"><i class="fa-solid fa-camera"></i> 화면 스타일</label>
             <select id="videoCameraSelect" class="form-select">
-              <option value="korea" selected>대한민국 전체 고정 (추천: 확대 없이 한눈에)</option>
-              <option value="dynamic">동적 추적 (이동 경로를 따라 카메라 이동)</option>
-              <option value="steady">안정적 팔로우 (부드러운 시점)</option>
+              <option value="korea" selected>대한민국 전체 고정 (국내 동선)</option>
+              <option value="dynamic">선택 경로 전체 맞춤</option>
+              <option value="steady">여백을 넉넉하게 표시</option>
             </select>
           </div>
 
@@ -239,7 +239,7 @@
           <div class="render-progress-bar">
             <div class="progress-fill" id="renderProgressFill" style="width: 20%;"></div>
           </div>
-          <p class="render-message" id="renderMessageText">지도 타일을 다운로드하고 프레임을 생성하고 있습니다.</p>
+          <p class="render-message" id="renderMessageText">브라우저에서 경로를 그리고 영상을 인코딩합니다. 제작 중에는 이 탭을 열어 두세요.</p>
         </div>
 
         <!-- 완성된 비디오 미리보기 및 다운로드 카드 -->
@@ -252,7 +252,7 @@
           </div>
           <div class="video-result-actions">
             <a id="downloadVideoBtn" class="btn btn-success w-100" download>
-              <i class="fa-solid fa-download"></i> MP4 영상 다운로드
+              <i class="fa-solid fa-download"></i> 영상 다운로드
             </a>
           </div>
         </div>
@@ -530,6 +530,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Leaflet Heatmap Plugin -->
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="/static/video-renderer.js"></script>
   <!-- Main Script -->
   <script src="/static/app.js"></script>
 </body>
