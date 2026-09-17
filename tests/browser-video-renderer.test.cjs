@@ -1,12 +1,18 @@
-const test = require('node:test');
+﻿const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  buildJourneyTiming,
   buildRoute,
   computeViewBounds,
+  easeOutCubic,
+  easeInOutCubic,
   formatDistance,
   formatMonthYear,
+  frameRenderer,
   getProgressivePaths,
   getSupportedMimeType,
+  interpolateLatLon,
+  positionAtDistance,
 } = require('../static/video-renderer.js');
 
 test('buildRoute keeps separate segment paths and ignores invalid coordinates', () => {
@@ -27,6 +33,7 @@ test('buildRoute keeps separate segment paths and ignores invalid coordinates', 
   assert.ok(route.distanceKm > 0.8 && route.distanceKm < 1.0);
   assert.equal(route.bounds.minLat, 35);
   assert.equal(route.bounds.maxLat, 37);
+  assert.equal(route.cumDist.length, 3);
 });
 
 test('buildRoute unwraps a route crossing the antimeridian', () => {
@@ -47,6 +54,58 @@ test('buildRoute samples long routes while preserving segment endpoints', () => 
   assert.ok(route.points.length <= 6);
   assert.equal(route.points[0].lng, 127);
   assert.equal(route.points.at(-1).lng, 127.019);
+});
+
+test('interpolateLatLon interpolates great circle coordinates between two points', () => {
+  const p1 = { lat: 37.0, lng: 127.0 };
+  const p2 = { lat: 38.0, lng: 128.0 };
+  const mid = interpolateLatLon(p1, p2, 0.5);
+  assert.ok(mid.lat > 37.4 && mid.lat < 37.6);
+  assert.ok(mid.lng > 127.4 && mid.lng < 127.6);
+
+  assert.deepEqual(interpolateLatLon(p1, p2, 0), p1);
+  assert.deepEqual(interpolateLatLon(p1, p2, 1), p2);
+});
+
+test('positionAtDistance returns continuous interpolated points along the route', () => {
+  const route = buildRoute([
+    {
+      date: '2026-05-01',
+      segments: [
+        { points: [[37.5, 127.0, '09:00'], [37.6, 127.0, '10:00']] },
+      ],
+    },
+  ]);
+  const half = positionAtDistance(route, route.distanceKm / 2);
+  assert.ok(half.lat > 37.54 && half.lat < 37.56);
+  assert.ok(Math.abs(half.lng - 127.0) < 1e-5);
+  assert.equal(half.date, '2026-05-01');
+});
+
+test('buildJourneyTiming creates smooth, monotonic distance progression', () => {
+  const cumDist = [0, 10, 50, 200, 500];
+  const distanceAt = buildJourneyTiming(cumDist);
+  assert.equal(distanceAt(0), 0);
+  assert.ok(distanceAt(0.5) > 0 && distanceAt(0.5) < 500);
+  assert.equal(distanceAt(1), 500);
+
+  // Strictly increasing
+  let prev = -1;
+  for (let step = 0; step <= 10; step++) {
+    const cur = distanceAt(step / 10);
+    assert.ok(cur >= prev);
+    prev = cur;
+  }
+});
+
+test('ease functions clamp between 0 and 1 with expected curvature', () => {
+  assert.equal(easeOutCubic(0), 0);
+  assert.equal(easeOutCubic(1), 1);
+  assert.ok(easeOutCubic(0.5) > 0.5); // decelerates
+
+  assert.equal(easeInOutCubic(0), 0);
+  assert.equal(easeInOutCubic(0.5), 0.5);
+  assert.equal(easeInOutCubic(1), 1);
 });
 
 test('getProgressivePaths contains only route points reached at the current progress', () => {
@@ -106,4 +165,52 @@ test('getSupportedMimeType chooses MP4 when available and WebM otherwise', () =>
 
   const webmRecorder = { isTypeSupported: (type) => type.startsWith('video/webm') };
   assert.match(getSupportedMimeType(webmRecorder), /^video\/webm/);
+});
+
+test('frameRenderer produces consistent frames without errors on mock canvas context', () => {
+  const route = buildRoute([
+    {
+      date: '2026-06-01',
+      segments: [
+        { points: [[37.5, 127.0], [36.5, 127.5], [35.2, 129.0]] },
+      ],
+    },
+  ]);
+  const view = computeViewBounds(route, 'korea', 720, 1280);
+  const calls = [];
+  const mockContext = {
+    save() {},
+    restore() {},
+    beginPath() {},
+    moveTo(...args) { calls.push(['moveTo', ...args]); },
+    lineTo(...args) { calls.push(['lineTo', ...args]); },
+    stroke() {},
+    fill() {},
+    arc(...args) { calls.push(['arc', ...args]); },
+    fillRect() {},
+    fillText(...args) { calls.push(['fillText', ...args]); },
+    measureText(text) { return { width: text.length * 8 }; },
+    quadraticCurveTo() {},
+    closePath() {},
+    drawImage() {},
+  };
+  const mockCanvas = {
+    width: 720,
+    height: 1280,
+    getContext() { return mockContext; },
+  };
+
+  const drawFrame = frameRenderer(mockCanvas, route, view, { tiles: new Map(), scale: 8, firstX: 0, lastX: 0, firstY: 0, lastY: 0 }, {
+    duration: 20,
+    title: '대한민국 여행 동선',
+  });
+
+  // Test journey frame (50% progress)
+  const head50 = drawFrame(0.5, 300, 600);
+  assert.ok(head50);
+  assert.equal(head50.date, '2026-06-01');
+
+  // Test outro frame (100% progress)
+  const headOutro = drawFrame(1.0, 580, 600);
+  assert.ok(headOutro);
 });

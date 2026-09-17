@@ -22,6 +22,9 @@ env/
 venv/
 *.egg-info/
 
+# Dependencies
+node_modules/
+
 # Temporary directories & tests
 temp_repo/
 test_*.png

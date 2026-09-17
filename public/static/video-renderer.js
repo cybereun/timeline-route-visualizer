@@ -1,12 +1,14 @@
-(function (root, factory) {
-  const renderer = factory();
+﻿(function (root, factory) {
+  const renderer = factory(root);
   if (typeof module === 'object' && module.exports) module.exports = renderer;
   if (root) root.BrowserVideoRenderer = renderer;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (root) {
   const TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile';
   const MAX_ROUTE_POINTS = 12000;
   const MAX_TILES = 180;
   const FPS = 30;
+  const OUTRO_SECONDS = 1.5;
+  const OUTRO_TRANSITION_SECONDS = 1.0;
 
   function coordinates(point) {
     if (Array.isArray(point)) return [Number(point[0]), Number(point[1])];
@@ -42,6 +44,32 @@
     const lat2 = radians(b.lat);
     const value = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
     return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(Math.max(0, 1 - value)));
+  }
+
+  function interpolateLatLon(p1, p2, fraction) {
+    if (fraction <= 0) return { lat: p1.lat, lng: p1.lng };
+    if (fraction >= 1) return { lat: p2.lat, lng: p2.lng };
+    const r = Math.PI / 180;
+    const phi1 = p1.lat * r, lam1 = p1.lng * r;
+    const phi2 = p2.lat * r, lam2 = p2.lng * r;
+    const ax = Math.cos(phi1) * Math.cos(lam1), ay = Math.cos(phi1) * Math.sin(lam1), az = Math.sin(phi1);
+    const bx = Math.cos(phi2) * Math.cos(lam2), by = Math.cos(phi2) * Math.sin(lam2), bz = Math.sin(phi2);
+    const dot = Math.max(-1, Math.min(1, ax * bx + ay * by + az * bz));
+    const omega = Math.acos(dot);
+    let left, right;
+    if (Math.sin(omega) < 1e-8) {
+      left = 1 - fraction;
+      right = fraction;
+    } else {
+      left = Math.sin((1 - fraction) * omega) / Math.sin(omega);
+      right = Math.sin(fraction * omega) / Math.sin(omega);
+    }
+    const x = left * ax + right * bx;
+    const y = left * ay + right * by;
+    const z = left * az + right * bz;
+    const lat = Math.atan2(z, Math.sqrt(x * x + y * y)) / r;
+    const lng = Math.atan2(y, x) / r;
+    return { lat, lng };
   }
 
   function buildRoute(days, options) {
@@ -89,10 +117,103 @@
 
     const points = paths.flatMap((path) => path.points);
     let totalDistanceKm = 0;
+    const cumDist = [];
     for (const path of paths) {
-      for (let i = 1; i < path.points.length; i++) totalDistanceKm += distanceKm(path.points[i - 1], path.points[i]);
+      for (let i = 0; i < path.points.length; i++) {
+        if (i === 0 && cumDist.length > 0) {
+          cumDist.push(totalDistanceKm);
+        } else if (i > 0) {
+          totalDistanceKm += distanceKm(path.points[i - 1], path.points[i]);
+          cumDist.push(totalDistanceKm);
+        } else {
+          cumDist.push(0.0);
+        }
+      }
     }
-    return { paths, points, bounds, distanceKm: totalDistanceKm, sourcePointCount: pointCount(days) };
+
+    return {
+      paths,
+      points,
+      bounds,
+      cumDist,
+      distanceKm: totalDistanceKm,
+      sourcePointCount: pointCount(days),
+    };
+  }
+
+  function positionAtDistance(route, distanceKm) {
+    const points = (route && route.points) || [];
+    const cumDist = (route && route.cumDist) || [];
+    if (!points.length) return null;
+    if (points.length === 1 || !cumDist.length || cumDist.at(-1) <= 0) {
+      return { ...points[0], index: 0, fraction: 0 };
+    }
+    const maxDist = cumDist.at(-1);
+    const target = Math.max(0, Math.min(maxDist, Number(distanceKm) || 0));
+    let low = 0, high = cumDist.length - 1;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (cumDist[mid] < target) low = mid + 1;
+      else high = mid;
+    }
+    const toIndex = Math.max(1, low);
+    const fromIndex = toIndex - 1;
+    const segment = cumDist[toIndex] - cumDist[fromIndex];
+    const fraction = segment <= 0 ? 0 : (target - cumDist[fromIndex]) / segment;
+    const inter = interpolateLatLon(points[fromIndex], points[toIndex], fraction);
+    return {
+      lat: inter.lat,
+      lng: inter.lng,
+      date: points[fromIndex].date || points[toIndex].date || '',
+      index: fromIndex,
+      fraction,
+    };
+  }
+
+  function buildJourneyTiming(cumDist) {
+    const totalKm = (cumDist && cumDist.length) ? cumDist.at(-1) : 0;
+    if (!cumDist || cumDist.length < 2 || totalKm <= 0) {
+      return (progress) => totalKm * Math.max(0, Math.min(1, Number(progress) || 0));
+    }
+    const exponent = 0.85;
+    const distances = [0.0];
+    const effective = [0.0];
+    let effectiveTotal = 0.0;
+    for (let i = 1; i < cumDist.length; i++) {
+      const segment = cumDist[i] - cumDist[i - 1];
+      if (segment <= 0) continue;
+      effectiveTotal += Math.pow(segment, exponent);
+      distances.push(cumDist[i]);
+      effective.push(effectiveTotal);
+    }
+    if (effectiveTotal <= 0 || distances.length < 2) {
+      return (progress) => totalKm * Math.max(0, Math.min(1, Number(progress) || 0));
+    }
+    const xValues = effective.map((val) => val / effectiveTotal);
+    return function distanceAt(progress) {
+      const elapsed = Math.max(0, Math.min(1, Number(progress) || 0));
+      let low = 0, high = xValues.length - 1;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (xValues[mid] < elapsed) low = mid + 1;
+        else high = mid;
+      }
+      const toIndex = Math.max(1, low);
+      const fromIndex = toIndex - 1;
+      const width = xValues[toIndex] - xValues[fromIndex];
+      const fraction = width <= 0 ? 0 : (elapsed - xValues[fromIndex]) / width;
+      return distances[fromIndex] + (distances[toIndex] - distances[fromIndex]) * fraction;
+    };
+  }
+
+  function easeOutCubic(t) {
+    const c = Math.max(0, Math.min(1, t));
+    return 1 - Math.pow(1 - c, 3);
+  }
+
+  function easeInOutCubic(t) {
+    const c = Math.max(0, Math.min(1, t));
+    return c < 0.5 ? 4 * c * c * c : 1 - Math.pow(-2 * c + 2, 3) / 2;
   }
 
   function mercatorY(latitude) {
@@ -202,35 +323,6 @@
     context.closePath();
   }
 
-  function wrapText(context, value, x, y, maxWidth, lineHeight, maxLines) {
-    const words = String(value || '').trim().split(/\s+/).filter(Boolean);
-    const lines = [];
-    let line = '';
-    const ellipsize = (text) => {
-      let clipped = text;
-      while (clipped && context.measureText(`${clipped}…`).width > maxWidth) clipped = clipped.slice(0, -1);
-      return `${clipped}…`;
-    };
-
-    for (let index = 0; index < words.length; index++) {
-      const candidate = line ? `${line} ${words[index]}` : words[index];
-      if (!line || context.measureText(candidate).width <= maxWidth) {
-        line = candidate;
-      } else if (lines.length < maxLines - 1) {
-        lines.push(line);
-        line = words[index];
-      } else {
-        lines.push(ellipsize(`${line} ${words.slice(index).join(' ')}`));
-        line = '';
-        break;
-      }
-    }
-    if (line) lines.push(context.measureText(line).width > maxWidth ? ellipsize(line) : line);
-    const visibleLines = lines.slice(0, maxLines);
-    visibleLines.forEach((text, index) => context.fillText(text, x, y + index * lineHeight));
-    return visibleLines.length;
-  }
-
   function formatDistance(kilometers) {
     return Math.max(0, Number(kilometers) || 0).toLocaleString('en-US', {
       minimumFractionDigits: 1,
@@ -253,13 +345,13 @@
   }
 
   function getProgressivePaths(route, progress) {
-    const totalPoints = route.points.length;
+    const totalPoints = route.points ? route.points.length : 0;
     if (!totalPoints) return [];
     const safeProgress = Math.max(0, Math.min(1, Number(progress) || 0));
     let remaining = Math.max(1, Math.ceil(safeProgress * totalPoints));
     const visiblePaths = [];
 
-    for (const path of route.paths) {
+    for (const path of route.paths || []) {
       if (remaining <= 0) break;
       const points = path.points.slice(0, Math.min(path.points.length, remaining));
       if (points.length) visiblePaths.push({ ...path, points });
@@ -272,7 +364,7 @@
     const context = canvas.getContext('2d', { alpha: false });
     const width = canvas.width;
     const height = canvas.height;
-    const scale = tileSet.scale;
+    const scale = Math.min(width, height) / 720.0;
     const viewWidth = view.maxX - view.minX;
     const viewHeight = view.maxY - view.minY;
     const project = (point) => ({
@@ -280,121 +372,232 @@
       y: (mercatorY(point.lat) - view.minY) / viewHeight * height,
     });
 
-    function drawTiles() {
+    const projectedPoints = (route.points || []).map(project);
+    const totalKm = route.distanceKm || 0;
+    const distanceAt = buildJourneyTiming(route.cumDist || []);
+    const duration = Number(options && options.duration) || 20;
+    const totalFrames = Math.max(1, Math.round(duration * FPS));
+    const outroFrames = Math.min(Math.round(OUTRO_SECONDS * FPS), totalFrames - 1);
+    const journeyFrames = totalFrames - outroFrames;
+    const outroTransitionFrames = Math.max(1, Math.round(OUTRO_TRANSITION_SECONDS * FPS));
+
+    // Pre-render map tiles onto an offscreen canvas for instantaneous rendering
+    let bgCanvas = null;
+    if (typeof document !== 'undefined' && document.createElement && tileSet && tileSet.tiles) {
+      bgCanvas = document.createElement('canvas');
+      bgCanvas.width = width;
+      bgCanvas.height = height;
+      const bgCtx = bgCanvas.getContext('2d', { alpha: false });
+      bgCtx.fillStyle = '#bfe8f2';
+      bgCtx.fillRect(0, 0, width, height);
+
       const firstX = tileSet.firstX;
       const lastX = tileSet.lastX;
       const firstY = tileSet.firstY;
       const lastY = tileSet.lastY;
+      const tileScale = tileSet.scale;
       for (let x = firstX; x <= lastX; x++) {
         for (let y = firstY; y <= lastY; y++) {
           const bitmap = tileSet.tiles.get(`${x},${y}`);
           if (!bitmap) continue;
-          const tileLeft = (x / scale - view.minX) / viewWidth * width;
-          const tileRight = ((x + 1) / scale - view.minX) / viewWidth * width;
-          const tileTop = (y / scale - view.minY) / viewHeight * height;
-          const tileBottom = ((y + 1) / scale - view.minY) / viewHeight * height;
-          context.drawImage(bitmap, tileLeft, tileTop, tileRight - tileLeft, tileBottom - tileTop);
+          const tileLeft = (x / tileScale - view.minX) / viewWidth * width;
+          const tileRight = ((x + 1) / tileScale - view.minX) / viewWidth * width;
+          const tileTop = (y / tileScale - view.minY) / viewHeight * height;
+          const tileBottom = ((y + 1) / tileScale - view.minY) / viewHeight * height;
+          bgCtx.drawImage(bitmap, tileLeft, tileTop, tileRight - tileLeft, tileBottom - tileTop);
         }
       }
     }
 
-    function drawRoute(progress) {
-      const lineWidth = Math.max(3, width * 0.0055);
-      const visiblePaths = getProgressivePaths(route, progress);
-      let marker = route.points[0];
-      context.save();
-      context.lineCap = 'round';
-      context.lineJoin = 'round';
-      context.strokeStyle = '#e90064';
-      context.lineWidth = lineWidth;
-      context.shadowColor = 'rgba(233, 0, 100, 0.45)';
-      context.shadowBlur = width * 0.012;
-      for (const path of visiblePaths) {
-        if (path.points.length < 2) {
-          marker = path.points.at(-1) || marker;
-          continue;
+    return function drawFrame(progress, frameIdx, totalF = totalFrames) {
+      const currentFrame = typeof frameIdx === 'number'
+        ? frameIdx
+        : Math.round(Math.max(0, Math.min(1, Number(progress) || 0)) * (totalF - 1));
+
+      let jProgress, oProgress;
+      if (currentFrame < journeyFrames) {
+        jProgress = journeyFrames <= 1 ? 1 : currentFrame / (journeyFrames - 1);
+        oProgress = 0.0;
+      } else {
+        jProgress = 1.0;
+        const outroIdx = currentFrame - journeyFrames;
+        oProgress = Math.min(1.0, outroIdx / outroTransitionFrames);
+      }
+
+      const d = distanceAt(jProgress);
+      const head = positionAtDistance(route, d) || (route.points[0] ? { ...route.points[0], index: 0 } : { lat: 36, lng: 128, index: 0 });
+      const headProj = project(head);
+
+      // 1. Draw Map Background
+      if (bgCanvas) {
+        context.drawImage(bgCanvas, 0, 0);
+      } else {
+        context.fillStyle = '#bfe8f2';
+        context.fillRect(0, 0, width, height);
+      }
+
+      // 2. Trajectory rendering matching visualizer.py & korea_overview_reel.mp4
+      const activeAlpha = 1.0 - easeOutCubic(oProgress);
+      const headIdx = head.index;
+      if (activeAlpha > 0.01 && projectedPoints.length > 0) {
+        // 2a. Historical trail (thin, dimmed pink line: color #e90064, alpha 0.34, linewidth 3.5 * scale)
+        context.save();
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.strokeStyle = `rgba(233, 0, 100, ${0.34 * activeAlpha})`;
+        context.lineWidth = 3.5 * scale;
+        let globalIdx = 0;
+        for (const path of route.paths || []) {
+          if (globalIdx > headIdx) break;
+          const pathStart = globalIdx;
+          const pathEnd = globalIdx + path.points.length - 1;
+          if (path.points.length >= 2 || pathStart === headIdx) {
+            context.beginPath();
+            context.moveTo(projectedPoints[pathStart].x, projectedPoints[pathStart].y);
+            const drawEnd = Math.min(pathEnd, headIdx);
+            for (let i = pathStart + 1; i <= drawEnd; i++) {
+              context.lineTo(projectedPoints[i].x, projectedPoints[i].y);
+            }
+            if (headIdx >= pathStart && headIdx <= pathEnd) {
+              context.lineTo(headProj.x, headProj.y);
+            }
+            context.stroke();
+          }
+          globalIdx += path.points.length;
         }
+        context.restore();
+
+        // 2b. Recent trail (thick bright magenta beam: color #e90064, alpha 1.0, linewidth 6.0 * scale)
+        // Starts within ~80km or 16% of total trip
+        const recentStartKm = Math.max(0.0, d - Math.max(80.0, totalKm * 0.16));
+        const cumDist = route.cumDist || [];
+        let recentIdx = 0;
+        while (recentIdx < cumDist.length && cumDist[recentIdx] < recentStartKm) {
+          recentIdx++;
+        }
+        recentIdx = Math.min(recentIdx, headIdx);
+
+        context.save();
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.strokeStyle = `rgba(233, 0, 100, ${1.0 * activeAlpha})`;
+        context.lineWidth = 6.0 * scale;
+        globalIdx = 0;
+        for (const path of route.paths || []) {
+          if (globalIdx > headIdx) break;
+          const pathStart = globalIdx;
+          const pathEnd = globalIdx + path.points.length - 1;
+          if (pathEnd >= recentIdx) {
+            const segStart = Math.max(pathStart, recentIdx);
+            const segEnd = Math.min(pathEnd, headIdx);
+            context.beginPath();
+            context.moveTo(projectedPoints[segStart].x, projectedPoints[segStart].y);
+            for (let i = segStart + 1; i <= segEnd; i++) {
+              context.lineTo(projectedPoints[i].x, projectedPoints[i].y);
+            }
+            if (headIdx >= pathStart && headIdx <= pathEnd) {
+              context.lineTo(headProj.x, headProj.y);
+            }
+            context.stroke();
+          }
+          globalIdx += path.points.length;
+        }
+        context.restore();
+
+        // 2c. Head marker
+        // Outer glow: color #e90064, alpha 0.5, radius 11 * scale (diameter 22 * scale)
+        context.save();
+        context.fillStyle = `rgba(233, 0, 100, ${0.5 * activeAlpha})`;
         context.beginPath();
-        let point = project(path.points[0]);
-        context.moveTo(point.x, point.y);
-        for (let i = 1; i < path.points.length; i++) {
-          point = project(path.points[i]);
-          context.lineTo(point.x, point.y);
-        }
+        context.arc(headProj.x, headProj.y, 11.0 * scale, 0, Math.PI * 2);
+        context.fill();
+
+        // Inner head point: fill #24191d, border #e90064 of width 2.5 * scale, radius 6 * scale (diameter 12 * scale)
+        context.fillStyle = `rgba(36, 25, 29, ${activeAlpha})`;
+        context.strokeStyle = `rgba(233, 0, 100, ${activeAlpha})`;
+        context.lineWidth = 2.5 * scale;
+        context.beginPath();
+        context.arc(headProj.x, headProj.y, 6.0 * scale, 0, Math.PI * 2);
+        context.fill();
         context.stroke();
-        marker = path.points.at(-1);
+        context.restore();
       }
-      context.shadowBlur = 0;
-      const markerPosition = project(marker);
 
-      // Outer translucent pink glow (matching Image 2)
-      context.fillStyle = 'rgba(233, 0, 100, 0.45)';
-      context.beginPath();
-      context.arc(markerPosition.x, markerPosition.y, Math.max(7, width * 0.020), 0, Math.PI * 2);
-      context.fill();
+      // 2d. Outro overview trail (transitions in during the final 1.5 seconds)
+      if (oProgress > 0 && projectedPoints.length > 1) {
+        const overviewAlpha = (190.0 / 255.0) * easeInOutCubic(oProgress);
+        context.save();
+        context.lineCap = 'round';
+        context.lineJoin = 'round';
+        context.strokeStyle = `rgba(233, 0, 100, ${overviewAlpha})`;
+        context.lineWidth = 3.0 * scale;
+        let pIdx = 0;
+        for (const path of route.paths || []) {
+          if (path.points.length >= 2) {
+            context.beginPath();
+            context.moveTo(projectedPoints[pIdx].x, projectedPoints[pIdx].y);
+            for (let i = 1; i < path.points.length; i++) {
+              context.lineTo(projectedPoints[pIdx + i].x, projectedPoints[pIdx + i].y);
+            }
+            context.stroke();
+          }
+          pIdx += path.points.length;
+        }
+        context.restore();
+      }
 
-      // Middle solid pink circle
-      context.fillStyle = '#e90064';
-      context.beginPath();
-      context.arc(markerPosition.x, markerPosition.y, Math.max(4.5, width * 0.011), 0, Math.PI * 2);
-      context.fill();
+      // 3. Top Info Card (Matching korea_overview_reel.mp4 / Image 2)
+      const cardWidth = Math.min(width * 0.85, 420.0 * scale);
+      const cardHeight = height * 0.09;
+      const cardX = (width - cardWidth) / 2.0;
+      const cardY = height * 0.03;
+      const cardRadius = width * 0.035;
 
-      // Inner black dot (matching Image 2)
-      context.fillStyle = '#24191d';
-      context.beginPath();
-      context.arc(markerPosition.x, markerPosition.y, Math.max(2.2, width * 0.0055), 0, Math.PI * 2);
-      context.fill();
-
-      context.restore();
-      return marker;
-    }
-
-    return function drawFrame(progress) {
-      const safeProgress = Math.max(0, Math.min(1, Number(progress) || 0));
-      context.fillStyle = '#bfe8f2';
-      context.fillRect(0, 0, width, height);
-      drawTiles();
-      const marker = drawRoute(safeProgress);
-      const infoCard = {
-        x: width * 0.18,
-        y: height * 0.02,
-        width: width * 0.64,
-        height: height * 0.11,
-      };
       context.save();
-      context.shadowColor = 'rgba(35, 56, 72, 0.15)';
+      context.shadowColor = 'rgba(36, 25, 29, 0.10)';
       context.shadowBlur = width * 0.025;
       context.shadowOffsetY = height * 0.003;
-      roundedRect(context, infoCard.x, infoCard.y, infoCard.width, infoCard.height, width * 0.035);
-      context.fillStyle = 'rgba(255, 255, 255, 0.94)';
+      roundedRect(context, cardX, cardY, cardWidth, cardHeight, cardRadius);
+      context.fillStyle = 'rgba(255, 248, 250, 0.92)'; // #fff8fa with alpha 0.92
       context.fill();
       context.shadowBlur = 0;
       context.shadowOffsetY = 0;
+
+      // Title: "대한민국 여행 동선"
       context.textAlign = 'center';
+      context.textBaseline = 'middle';
       context.fillStyle = '#24191d';
-      context.font = `700 ${Math.round(width * 0.038)}px system-ui, -apple-system, sans-serif`;
-      const titleLineCount = wrapText(
-        context,
-        options.title || '대한민국 여행 동선',
-        width / 2,
-        infoCard.y + infoCard.height * 0.38,
-        infoCard.width * 0.9,
-        height * 0.028,
-        2
+      context.font = `700 ${Math.round(21 * scale)}px system-ui, -apple-system, "Malgun Gothic", sans-serif`;
+      context.fillText(
+        (options && options.title) || '대한민국 여행 동선',
+        width / 2.0,
+        cardY + cardHeight * 0.40,
+        cardWidth * 0.90
       );
+
+      // Subtitle: "Month Year  •  Distance km"
       context.fillStyle = '#5c4b52';
-      context.font = `400 ${Math.round(width * 0.024)}px system-ui, -apple-system, sans-serif`;
-      const currentDate = formatMonthYear(marker.date || route.points[0].date);
-      const distance = formatDistance(route.distanceKm * safeProgress);
-      const detailsY = infoCard.y + infoCard.height * (titleLineCount > 1 ? 0.84 : 0.74);
-      context.fillText(`${currentDate}  •  ${distance} km`, width / 2, detailsY, infoCard.width * 0.9);
+      context.font = `400 ${Math.round(14 * scale)}px system-ui, -apple-system, "Malgun Gothic", sans-serif`;
+      const currentDate = formatMonthYear(head.date || (route.points[0] && route.points[0].date));
+      const distStr = formatDistance(d);
+      context.fillText(
+        options && options.hideDates ? `${distStr} km` : `${currentDate}  •  ${distStr} km`,
+        width / 2.0,
+        cardY + cardHeight * 0.74,
+        cardWidth * 0.90
+      );
       context.restore();
 
+      // 4. Map Attribution
+      context.save();
       context.textAlign = 'right';
+      context.textBaseline = 'bottom';
       context.fillStyle = 'rgba(48, 67, 78, 0.7)';
-      context.font = `400 ${Math.round(width * 0.017)}px system-ui, sans-serif`;
+      context.font = `400 ${Math.round(11 * scale)}px system-ui, sans-serif`;
       context.fillText('© Esri', width * 0.985, height * 0.988);
-      context.textAlign = 'left';
+      context.restore();
+
+      return head;
     };
   }
 
@@ -413,14 +616,29 @@
 
   function recordCanvas(canvas, drawFrame, duration, mimeType, onProgress, bitrate) {
     return new Promise((resolve, reject) => {
-      const stream = canvas.captureStream(FPS);
+      const totalFrames = Math.max(1, Math.round(duration * FPS));
+      const frameIntervalMs = 1000 / FPS; // 33.333ms
+
+      let stream;
+      let track = null;
+      try {
+        stream = canvas.captureStream(0);
+        track = stream.getVideoTracks()[0] || null;
+      } catch (_) {
+        stream = canvas.captureStream(FPS);
+      }
+      if (!track || typeof track.requestFrame !== 'function') {
+        stream = canvas.captureStream(FPS);
+        track = null;
+      }
+
       const recorderOptions = { videoBitsPerSecond: bitrate };
       if (mimeType) recorderOptions.mimeType = mimeType;
       let recorder;
       try {
         recorder = new MediaRecorder(stream, recorderOptions);
       } catch (error) {
-        stream.getTracks().forEach((track) => track.stop());
+        stream.getTracks().forEach((t) => t.stop());
         reject(error);
         return;
       }
@@ -430,8 +648,8 @@
       const finishWithError = (error) => {
         if (failed) return;
         failed = true;
-        try { if (recorder.state !== 'inactive') recorder.stop(); } catch (_) { /* already stopped */ }
-        stream.getTracks().forEach((track) => track.stop());
+        try { if (recorder.state !== 'inactive') recorder.stop(); } catch (_) { /* stopped */ }
+        stream.getTracks().forEach((t) => t.stop());
         reject(error instanceof Error ? error : new Error('브라우저에서 영상 인코딩에 실패했습니다.'));
       };
 
@@ -439,13 +657,34 @@
         if (event.data && event.data.size) chunks.push(event.data);
       };
       recorder.onerror = (event) => finishWithError(event.error || new Error('브라우저에서 영상 인코딩에 실패했습니다.'));
-      recorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
         if (failed) return;
-        const type = recorder.mimeType || mimeType || 'video/webm';
-        const blob = new Blob(chunks, { type: type.split(';')[0] });
-        if (!blob.size) reject(new Error('영상 파일이 비어 있습니다. 다시 시도해 주세요.'));
-        else resolve({ blob, mimeType: blob.type });
+        try {
+          const rawType = recorder.mimeType || mimeType || 'video/webm';
+          let blob = new Blob(chunks, { type: rawType.split(';')[0] });
+          if (!blob.size) {
+            reject(new Error('영상 파일이 비어 있습니다. 다시 시도해 주세요.'));
+            return;
+          }
+
+          // If WebM and fix-webm-duration is available, fix the EBML duration header!
+          const isWebm = blob.type.includes('webm');
+          const fixDurationFn = typeof ysFixWebmDuration === 'function'
+            ? ysFixWebmDuration
+            : (typeof root !== 'undefined' && root && root.ysFixWebmDuration);
+          if (isWebm && fixDurationFn) {
+            try {
+              blob = await fixDurationFn(blob, duration * 1000, { logger: false });
+            } catch (fixErr) {
+              console.warn('WebM 재생 시간 메타데이터 수정 중 경고:', fixErr);
+            }
+          }
+
+          resolve({ blob, mimeType: blob.type });
+        } catch (err) {
+          reject(err);
+        }
       };
 
       try {
@@ -455,28 +694,54 @@
         return;
       }
 
-      const startedAt = performance.now();
+      // Deterministic frame pacing
+      const startTime = performance.now();
+      let frameIndex = 0;
       let lastProgressUpdate = -Infinity;
-      const render = (now) => {
+
+      const step = async () => {
         if (failed || recorder.state === 'inactive') return;
-        const progress = Math.min(1, Math.max(0, (now - startedAt) / (duration * 1000)));
-        try {
-          drawFrame(progress);
-          if (onProgress && (now - lastProgressUpdate >= 250 || progress >= 1)) {
-            onProgress(progress);
+
+        while (frameIndex < totalFrames) {
+          if (failed || recorder.state === 'inactive') return;
+
+          const progress = totalFrames <= 1 ? 1 : frameIndex / (totalFrames - 1);
+          try {
+            drawFrame(progress, frameIndex, totalFrames);
+            if (track && typeof track.requestFrame === 'function') {
+              track.requestFrame();
+            }
+          } catch (err) {
+            finishWithError(err);
+            return;
+          }
+
+          const now = performance.now();
+          if (onProgress && (now - lastProgressUpdate >= 250 || frameIndex === totalFrames - 1)) {
+            onProgress((frameIndex + 1) / totalFrames);
             lastProgressUpdate = now;
           }
-        } catch (error) {
-          finishWithError(error);
-          return;
+
+          frameIndex++;
+          const targetNextTime = startTime + frameIndex * frameIntervalMs;
+          const waitMs = targetNextTime - performance.now();
+
+          if (waitMs > 1) {
+            await new Promise((r) => setTimeout(r, waitMs));
+          } else {
+            await new Promise((r) => setTimeout(r, 0));
+          }
         }
-        if (progress >= 1) {
-          window.setTimeout(() => {
-            if (recorder.state !== 'inactive') recorder.stop();
-          }, 150);
-        } else window.requestAnimationFrame(render);
+
+        // Allow final frame to be cleanly encoded before stopping
+        setTimeout(() => {
+          if (recorder.state !== 'inactive') {
+            recorder.stop();
+          }
+        }, Math.max(250, frameIntervalMs * 4));
       };
-      window.requestAnimationFrame(render);
+
+      step().catch(finishWithError);
     });
   }
 
@@ -503,7 +768,8 @@
 
     try {
       const bitrate = resolution === 1080 ? 8_000_000 : 4_000_000;
-      const recording = await recordCanvas(canvas, drawFrame, Number(options.duration) || 20, mimeType, options.onProgress, bitrate);
+      const duration = Number(options.duration) || 20;
+      const recording = await recordCanvas(canvas, drawFrame, duration, mimeType, options.onProgress, bitrate);
       const extension = recording.mimeType.includes('mp4') ? 'mp4' : 'webm';
       const startDate = route.points[0].date || 'timeline';
       const endDate = route.points.at(-1).date || startDate;
@@ -519,12 +785,20 @@
   }
 
   return {
+    buildJourneyTiming,
     buildRoute,
     computeViewBounds,
+    distanceKm,
+    easeOutCubic,
+    easeInOutCubic,
     formatDistance,
     formatMonthYear,
+    frameRenderer,
     getProgressivePaths,
     getSupportedMimeType,
+    interpolateLatLon,
+    positionAtDistance,
+    recordCanvas,
     renderVideo,
   };
 });
