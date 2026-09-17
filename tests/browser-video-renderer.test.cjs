@@ -1,6 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildRoute, computeViewBounds, getSupportedMimeType } = require('../static/video-renderer.js');
+const {
+  buildRoute,
+  computeViewBounds,
+  formatDistance,
+  formatMonthYear,
+  getProgressivePaths,
+  getSupportedMimeType,
+} = require('../static/video-renderer.js');
 
 test('buildRoute keeps separate segment paths and ignores invalid coordinates', () => {
   const route = buildRoute([
@@ -40,6 +47,39 @@ test('buildRoute samples long routes while preserving segment endpoints', () => 
   assert.ok(route.points.length <= 6);
   assert.equal(route.points[0].lng, 127);
   assert.equal(route.points.at(-1).lng, 127.019);
+});
+
+test('getProgressivePaths contains only route points reached at the current progress', () => {
+  const route = buildRoute([
+    {
+      date: '2026-02-01',
+      segments: [
+        { points: [[37, 127], [37, 127.01], [37.01, 127.02]] },
+        { points: [[36, 128]] },
+      ],
+    },
+  ]);
+  const longitudes = (paths) => paths.map((path) => path.points.map((point) => point.lng));
+
+  const halfway = typeof getProgressivePaths === 'function'
+    ? getProgressivePaths(route, 0.5)
+    : [];
+  const complete = typeof getProgressivePaths === 'function'
+    ? getProgressivePaths(route, 1)
+    : [];
+
+  assert.deepEqual(longitudes(halfway), [[127, 127.01]]);
+  assert.deepEqual(longitudes(complete), [[127, 127.01, 127.02], [128]]);
+});
+
+test('formatMonthYear shows the current route month like the reference video', () => {
+  const actual = typeof formatMonthYear === 'function' ? formatMonthYear('2026-02-01') : null;
+  assert.equal(actual, 'February 2026');
+});
+
+test('formatDistance displays kilometers with 1 decimal place and thousands separators', () => {
+  const actual = typeof formatDistance === 'function' ? formatDistance(1505.7) : null;
+  assert.equal(actual, '1,505.7');
 });
 
 test('computeViewBounds handles a stationary route and a non-Korean Korea preset', () => {

@@ -3,7 +3,7 @@
   if (typeof module === 'object' && module.exports) module.exports = renderer;
   if (root) root.BrowserVideoRenderer = renderer;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile';
+  const TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile';
   const MAX_ROUTE_POINTS = 12000;
   const MAX_TILES = 180;
   const FPS = 30;
@@ -226,11 +226,46 @@
       }
     }
     if (line) lines.push(context.measureText(line).width > maxWidth ? ellipsize(line) : line);
-    lines.slice(0, maxLines).forEach((text, index) => context.fillText(text, x, y + index * lineHeight));
+    const visibleLines = lines.slice(0, maxLines);
+    visibleLines.forEach((text, index) => context.fillText(text, x, y + index * lineHeight));
+    return visibleLines.length;
   }
 
   function formatDistance(kilometers) {
-    return (Number(kilometers) || 0).toLocaleString('ko-KR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    return Math.max(0, Number(kilometers) || 0).toLocaleString('en-US', {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+  }
+
+  function formatMonthYear(value) {
+    const date = String(value || '').trim();
+    const match = date.match(/^(\d{4})-(\d{2})/);
+    if (!match) return date;
+    const month = Number(match[2]);
+    if (month < 1 || month > 12) return date;
+    const timestamp = Date.UTC(Number(match[1]), month - 1, 1);
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'UTC',
+    }).format(timestamp);
+  }
+
+  function getProgressivePaths(route, progress) {
+    const totalPoints = route.points.length;
+    if (!totalPoints) return [];
+    const safeProgress = Math.max(0, Math.min(1, Number(progress) || 0));
+    let remaining = Math.max(1, Math.ceil(safeProgress * totalPoints));
+    const visiblePaths = [];
+
+    for (const path of route.paths) {
+      if (remaining <= 0) break;
+      const points = path.points.slice(0, Math.min(path.points.length, remaining));
+      if (points.length) visiblePaths.push({ ...path, points });
+      remaining -= points.length;
+    }
+    return visiblePaths;
   }
 
   function frameRenderer(canvas, route, view, tileSet, options) {
@@ -238,12 +273,11 @@
     const width = canvas.width;
     const height = canvas.height;
     const scale = tileSet.scale;
-    const mapArea = { x: width * 0.075, y: height * 0.235, width: width * 0.85, height: height * 0.59 };
     const viewWidth = view.maxX - view.minX;
     const viewHeight = view.maxY - view.minY;
     const project = (point) => ({
-      x: mapArea.x + ((point.lng + 180) / 360 - view.minX) / viewWidth * mapArea.width,
-      y: mapArea.y + (mercatorY(point.lat) - view.minY) / viewHeight * mapArea.height,
+      x: ((point.lng + 180) / 360 - view.minX) / viewWidth * width,
+      y: (mercatorY(point.lat) - view.minY) / viewHeight * height,
     });
 
     function drawTiles() {
@@ -255,10 +289,10 @@
         for (let y = firstY; y <= lastY; y++) {
           const bitmap = tileSet.tiles.get(`${x},${y}`);
           if (!bitmap) continue;
-          const tileLeft = (x / scale - view.minX) / viewWidth * mapArea.width + mapArea.x;
-          const tileRight = ((x + 1) / scale - view.minX) / viewWidth * mapArea.width + mapArea.x;
-          const tileTop = (y / scale - view.minY) / viewHeight * mapArea.height + mapArea.y;
-          const tileBottom = ((y + 1) / scale - view.minY) / viewHeight * mapArea.height + mapArea.y;
+          const tileLeft = (x / scale - view.minX) / viewWidth * width;
+          const tileRight = ((x + 1) / scale - view.minX) / viewWidth * width;
+          const tileTop = (y / scale - view.minY) / viewHeight * height;
+          const tileBottom = ((y + 1) / scale - view.minY) / viewHeight * height;
           context.drawImage(bitmap, tileLeft, tileTop, tileRight - tileLeft, tileBottom - tileTop);
         }
       }
@@ -266,110 +300,101 @@
 
     function drawRoute(progress) {
       const lineWidth = Math.max(3, width * 0.0055);
+      const visiblePaths = getProgressivePaths(route, progress);
+      let marker = route.points[0];
       context.save();
       context.lineCap = 'round';
       context.lineJoin = 'round';
-      context.strokeStyle = 'rgba(255, 143, 191, 0.2)';
-      context.lineWidth = Math.max(2, lineWidth * 0.8);
-      for (const path of route.paths) {
-        if (!path.points.length) continue;
-        context.beginPath();
-        const first = project(path.points[0]);
-        context.moveTo(first.x, first.y);
-        for (let i = 1; i < path.points.length; i++) {
-          const point = project(path.points[i]);
-          context.lineTo(point.x, point.y);
-        }
-        context.stroke();
-      }
-
-      let visible = Math.max(1, progress * route.points.length);
-      let marker = route.points[0];
-      context.strokeStyle = '#ff4d9d';
+      context.strokeStyle = '#e90064';
       context.lineWidth = lineWidth;
-      context.shadowColor = 'rgba(255, 40, 132, 0.9)';
-      context.shadowBlur = width * 0.025;
-      for (const path of route.paths) {
-        if (visible <= 0 || !path.points.length) break;
-        const count = Math.min(path.points.length, Math.max(1, Math.ceil(visible)));
+      context.shadowColor = 'rgba(233, 0, 100, 0.45)';
+      context.shadowBlur = width * 0.012;
+      for (const path of visiblePaths) {
+        if (path.points.length < 2) {
+          marker = path.points.at(-1) || marker;
+          continue;
+        }
         context.beginPath();
         let point = project(path.points[0]);
         context.moveTo(point.x, point.y);
-        for (let i = 1; i < count; i++) {
+        for (let i = 1; i < path.points.length; i++) {
           point = project(path.points[i]);
           context.lineTo(point.x, point.y);
         }
         context.stroke();
-        marker = path.points[count - 1];
-        visible -= count;
+        marker = path.points.at(-1);
       }
       context.shadowBlur = 0;
       const markerPosition = project(marker);
-      context.fillStyle = '#fff';
+
+      // Outer translucent pink glow (matching Image 2)
+      context.fillStyle = 'rgba(233, 0, 100, 0.45)';
       context.beginPath();
-      context.arc(markerPosition.x, markerPosition.y, Math.max(6, width * 0.011), 0, Math.PI * 2);
+      context.arc(markerPosition.x, markerPosition.y, Math.max(7, width * 0.020), 0, Math.PI * 2);
       context.fill();
-      context.strokeStyle = '#ff4d9d';
-      context.lineWidth = Math.max(3, width * 0.004);
-      context.stroke();
+
+      // Middle solid pink circle
+      context.fillStyle = '#e90064';
+      context.beginPath();
+      context.arc(markerPosition.x, markerPosition.y, Math.max(4.5, width * 0.011), 0, Math.PI * 2);
+      context.fill();
+
+      // Inner black dot (matching Image 2)
+      context.fillStyle = '#24191d';
+      context.beginPath();
+      context.arc(markerPosition.x, markerPosition.y, Math.max(2.2, width * 0.0055), 0, Math.PI * 2);
+      context.fill();
+
       context.restore();
       return marker;
     }
 
     return function drawFrame(progress) {
-      const gradient = context.createLinearGradient(0, 0, width, height);
-      gradient.addColorStop(0, '#0c1220');
-      gradient.addColorStop(0.55, '#111827');
-      gradient.addColorStop(1, '#181122');
-      context.fillStyle = gradient;
+      const safeProgress = Math.max(0, Math.min(1, Number(progress) || 0));
+      context.fillStyle = '#bfe8f2';
       context.fillRect(0, 0, width, height);
-
-      context.fillStyle = '#ff72aa';
-      context.font = `600 ${Math.round(width * 0.027)}px system-ui, sans-serif`;
-      context.fillText('TIMELINE RECAP', width * 0.09, height * 0.075);
-      context.fillStyle = '#fff';
-      context.font = `700 ${Math.round(width * 0.048)}px system-ui, sans-serif`;
-      wrapText(context, options.title, width * 0.09, height * 0.125, width * 0.82, height * 0.055, 2);
-      context.fillStyle = '#aeb9ca';
-      context.font = `400 ${Math.round(width * 0.022)}px system-ui, sans-serif`;
-      context.fillText(`${route.points[0].date}  —  ${route.points.at(-1).date}`, width * 0.09, height * 0.205);
-
-      roundedRect(context, mapArea.x, mapArea.y, mapArea.width, mapArea.height, width * 0.035);
-      context.save();
-      context.clip();
-      context.fillStyle = '#111a27';
-      context.fillRect(mapArea.x, mapArea.y, mapArea.width, mapArea.height);
       drawTiles();
-      context.fillStyle = 'rgba(9, 16, 28, 0.17)';
-      context.fillRect(mapArea.x, mapArea.y, mapArea.width, mapArea.height);
-      const marker = drawRoute(progress);
+      const marker = drawRoute(safeProgress);
+      const infoCard = {
+        x: width * 0.18,
+        y: height * 0.02,
+        width: width * 0.64,
+        height: height * 0.11,
+      };
+      context.save();
+      context.shadowColor = 'rgba(35, 56, 72, 0.15)';
+      context.shadowBlur = width * 0.025;
+      context.shadowOffsetY = height * 0.003;
+      roundedRect(context, infoCard.x, infoCard.y, infoCard.width, infoCard.height, width * 0.035);
+      context.fillStyle = 'rgba(255, 255, 255, 0.94)';
+      context.fill();
+      context.shadowBlur = 0;
+      context.shadowOffsetY = 0;
+      context.textAlign = 'center';
+      context.fillStyle = '#24191d';
+      context.font = `700 ${Math.round(width * 0.038)}px system-ui, -apple-system, sans-serif`;
+      const titleLineCount = wrapText(
+        context,
+        options.title || '대한민국 여행 동선',
+        width / 2,
+        infoCard.y + infoCard.height * 0.38,
+        infoCard.width * 0.9,
+        height * 0.028,
+        2
+      );
+      context.fillStyle = '#5c4b52';
+      context.font = `400 ${Math.round(width * 0.024)}px system-ui, -apple-system, sans-serif`;
+      const currentDate = formatMonthYear(marker.date || route.points[0].date);
+      const distance = formatDistance(route.distanceKm * safeProgress);
+      const detailsY = infoCard.y + infoCard.height * (titleLineCount > 1 ? 0.84 : 0.74);
+      context.fillText(`${currentDate}  •  ${distance} km`, width / 2, detailsY, infoCard.width * 0.9);
       context.restore();
 
-      const informationY = height * 0.875;
-      context.fillStyle = '#98a7bb';
-      context.font = `500 ${Math.round(width * 0.024)}px system-ui, sans-serif`;
-      context.fillText('누적 이동 거리', width * 0.09, informationY);
-      context.fillStyle = '#fff';
-      context.font = `700 ${Math.round(width * 0.057)}px system-ui, sans-serif`;
-      context.fillText(`${formatDistance(route.distanceKm * progress)} km`, width * 0.09, informationY + height * 0.052);
       context.textAlign = 'right';
-      context.fillStyle = '#aeb9ca';
-      context.font = `500 ${Math.round(width * 0.023)}px system-ui, sans-serif`;
-      context.fillText(marker.date || '', width * 0.91, informationY + height * 0.052);
+      context.fillStyle = 'rgba(48, 67, 78, 0.7)';
+      context.font = `400 ${Math.round(width * 0.017)}px system-ui, sans-serif`;
+      context.fillText('© Esri', width * 0.985, height * 0.988);
       context.textAlign = 'left';
-
-      const progressX = width * 0.09;
-      const progressY = height * 0.96;
-      const progressWidth = width * 0.82;
-      context.fillStyle = 'rgba(255,255,255,0.14)';
-      roundedRect(context, progressX, progressY, progressWidth, Math.max(3, height * 0.004), height * 0.004);
-      context.fill();
-      context.fillStyle = '#ff4d9d';
-      roundedRect(context, progressX, progressY, Math.max(3, progressWidth * progress), Math.max(3, height * 0.004), height * 0.004);
-      context.fill();
-      context.fillStyle = '#8290a4';
-      context.font = `400 ${Math.round(width * 0.018)}px system-ui, sans-serif`;
-      context.fillText('© Esri  ·  Timeline Visualizer', progressX, height * 0.985);
     };
   }
 
@@ -469,7 +494,7 @@
     if (!mimeType && typeof window.MediaRecorder.isTypeSupported === 'function') {
       throw new Error('이 브라우저는 MP4 또는 WebM 영상 인코딩을 지원하지 않습니다. 최신 Chrome, Edge, Firefox 또는 Safari를 사용해 주세요.');
     }
-    const mapArea = { width: canvas.width * 0.85, height: canvas.height * 0.59 };
+    const mapArea = { width: canvas.width, height: canvas.height };
     const view = computeViewBounds(route, options.camera || 'korea', mapArea.width, mapArea.height);
     const tiles = await loadTiles(view, (progress) => {
       if (options.onTilesProgress) options.onTilesProgress(progress);
@@ -493,5 +518,13 @@
     }
   }
 
-  return { buildRoute, computeViewBounds, getSupportedMimeType, renderVideo };
+  return {
+    buildRoute,
+    computeViewBounds,
+    formatDistance,
+    formatMonthYear,
+    getProgressivePaths,
+    getSupportedMimeType,
+    renderVideo,
+  };
 });
