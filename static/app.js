@@ -434,6 +434,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const tileLayers = {
       osm: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}", {
         attribution: "© Esri",
+        // Esri serves placeholder tiles above level 13 in Korean coverage.
+        maxNativeZoom: 13,
         maxZoom: 19,
       }),
       "carto-dark": L.tileLayer(
