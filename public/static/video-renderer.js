@@ -1,4 +1,4 @@
-﻿(function (root, factory) {
+(function (root, factory) {
   const renderer = factory(root);
   if (typeof module === 'object' && module.exports) module.exports = renderer;
   if (root) root.BrowserVideoRenderer = renderer;
@@ -461,12 +461,12 @@
       const activeAlpha = 1.0 - easeOutCubic(oProgress);
       const headIdx = head.index;
       if (activeAlpha > 0.01 && projectedPoints.length > 0) {
-        // 2a. Historical trail (softer, refined watermark look: color #e90064, alpha 0.20, linewidth 2.5 * scale)
+        // 2a. Historical trail (ultra-fine delicate watermark: color #e90064, alpha 0.20, linewidth 1.4 * scale)
         context.save();
         context.lineCap = 'round';
         context.lineJoin = 'round';
         context.strokeStyle = `rgba(233, 0, 100, ${0.20 * activeAlpha})`;
-        context.lineWidth = 2.5 * scale;
+        context.lineWidth = 1.4 * scale;
         let globalIdx = 0;
         for (const path of route.paths || []) {
           if (globalIdx > headIdx) break;
@@ -488,7 +488,7 @@
         }
         context.restore();
 
-        // 2b. Recent trail (thick bright magenta beam: color #e90064, alpha 1.0, linewidth 6.0 * scale)
+        // 2b. Recent trail (sleek bright magenta beam: color #e90064, alpha 1.0, linewidth 3.2 * scale)
         // Starts within ~80km or 16% of total trip
         const recentStartKm = Math.max(0.0, d - Math.max(80.0, totalKm * 0.16));
         const cumDist = route.cumDist || [];
@@ -502,7 +502,7 @@
         context.lineCap = 'round';
         context.lineJoin = 'round';
         context.strokeStyle = `rgba(233, 0, 100, ${1.0 * activeAlpha})`;
-        context.lineWidth = 6.0 * scale;
+        context.lineWidth = 3.2 * scale;
         globalIdx = 0;
         for (const path of route.paths || []) {
           if (globalIdx > headIdx) break;
@@ -526,19 +526,19 @@
         context.restore();
 
         // 2c. Head marker
-        // Outer glow: color #e90064, alpha 0.5, radius 11 * scale (diameter 22 * scale)
+        // Outer glow: color #e90064, alpha 0.5, radius 7.0 * scale (diameter 14 * scale)
         context.save();
         context.fillStyle = `rgba(233, 0, 100, ${0.5 * activeAlpha})`;
         context.beginPath();
-        context.arc(headProj.x, headProj.y, 11.0 * scale, 0, Math.PI * 2);
+        context.arc(headProj.x, headProj.y, 7.0 * scale, 0, Math.PI * 2);
         context.fill();
 
-        // Inner head point: fill #24191d, border #e90064 of width 2.5 * scale, radius 6 * scale (diameter 12 * scale)
+        // Inner head point: fill #24191d, border #e90064 of width 1.5 * scale, radius 3.8 * scale (diameter 7.6 * scale)
         context.fillStyle = `rgba(36, 25, 29, ${activeAlpha})`;
         context.strokeStyle = `rgba(233, 0, 100, ${activeAlpha})`;
-        context.lineWidth = 2.5 * scale;
+        context.lineWidth = 1.5 * scale;
         context.beginPath();
-        context.arc(headProj.x, headProj.y, 6.0 * scale, 0, Math.PI * 2);
+        context.arc(headProj.x, headProj.y, 3.8 * scale, 0, Math.PI * 2);
         context.fill();
         context.stroke();
         context.restore();
@@ -551,7 +551,7 @@
         context.lineCap = 'round';
         context.lineJoin = 'round';
         context.strokeStyle = `rgba(233, 0, 100, ${overviewAlpha})`;
-        context.lineWidth = 3.0 * scale;
+        context.lineWidth = 1.8 * scale;
         let pIdx = 0;
         for (const path of route.paths || []) {
           if (path.points.length >= 2) {
