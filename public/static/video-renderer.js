@@ -228,12 +228,26 @@
     let minLat = route.bounds.minLat;
     let maxLat = route.bounds.maxLat;
 
+    const isInsideKorea = minLat >= 32.8 && maxLat <= 39.7 && minLng >= 124.2 && maxLng <= 132.5;
     const overlapsKorea = minLat <= 39.7 && maxLat >= 32.8 && minLng <= 132.5 && maxLng >= 124.2;
-    if (camera === 'korea' && overlapsKorea) {
-      minLng = 124.2;
-      maxLng = 132.5;
-      minLat = 32.8;
-      maxLat = 39.7;
+
+    if (camera === 'korea') {
+      if (overlapsKorea) {
+        if (isInsideKorea) {
+          // Pure domestic trip inside Korea: focus strictly on standard Korea bounds
+          minLng = 124.2;
+          maxLng = 132.5;
+          minLat = 32.8;
+          maxLat = 39.7;
+        } else {
+          // Overseas travel that starts or connects with Korea: auto-fit both Korea and all foreign destinations
+          minLng = Math.min(124.2, minLng);
+          maxLng = Math.max(132.5, maxLng);
+          minLat = Math.min(32.8, minLat);
+          maxLat = Math.max(39.7, maxLat);
+        }
+      }
+      // If no points in Korea, route bounds are kept as-is to frame the foreign trip
     }
 
     let left = (minLng + 180) / 360;
@@ -249,7 +263,7 @@
     if (spanX / spanY < aspect) spanX = spanY * aspect;
     else spanY = spanX / aspect;
 
-    const padding = camera === 'steady' ? 1.28 : 1.12;
+    const padding = (camera === 'korea' && isInsideKorea) ? 1.12 : 1.25;
     spanX *= padding;
     spanY *= padding;
     return {
@@ -381,6 +395,13 @@
     const journeyFrames = totalFrames - outroFrames;
     const outroTransitionFrames = Math.max(1, Math.round(OUTRO_TRANSITION_SECONDS * FPS));
 
+    // Determine if the route is strictly inside Korea or includes foreign countries
+    const isInsideKorea = route.bounds &&
+                          route.bounds.minLat >= 32.8 &&
+                          route.bounds.maxLat <= 39.7 &&
+                          route.bounds.minLng >= 124.2 &&
+                          route.bounds.maxLng <= 132.5;
+
     // Pre-render map tiles onto an offscreen canvas for instantaneous rendering
     let bgCanvas = null;
     if (typeof document !== 'undefined' && document.createElement && tileSet && tileSet.tiles) {
@@ -440,12 +461,12 @@
       const activeAlpha = 1.0 - easeOutCubic(oProgress);
       const headIdx = head.index;
       if (activeAlpha > 0.01 && projectedPoints.length > 0) {
-        // 2a. Historical trail (thin, dimmed pink line: color #e90064, alpha 0.34, linewidth 3.5 * scale)
+        // 2a. Historical trail (softer, refined watermark look: color #e90064, alpha 0.20, linewidth 2.5 * scale)
         context.save();
         context.lineCap = 'round';
         context.lineJoin = 'round';
-        context.strokeStyle = `rgba(233, 0, 100, ${0.34 * activeAlpha})`;
-        context.lineWidth = 3.5 * scale;
+        context.strokeStyle = `rgba(233, 0, 100, ${0.20 * activeAlpha})`;
+        context.lineWidth = 2.5 * scale;
         let globalIdx = 0;
         for (const path of route.paths || []) {
           if (globalIdx > headIdx) break;
@@ -563,13 +584,19 @@
       context.shadowBlur = 0;
       context.shadowOffsetY = 0;
 
-      // Title: "대한민국 여행 동선"
+      // Title: "대한민국 여행 동선" (for domestic) or "나의 여행 동선" (for international)
+      const defaultTitle = isInsideKorea ? '대한민국 여행 동선' : '나의 여행 동선';
+      let titleText = (options && options.title) ? options.title : defaultTitle;
+      if (titleText === '대한민국 여행 동선' && !isInsideKorea) {
+        titleText = '나의 여행 동선';
+      }
+
       context.textAlign = 'center';
       context.textBaseline = 'middle';
       context.fillStyle = '#24191d';
       context.font = `700 ${Math.round(21 * scale)}px system-ui, -apple-system, "Malgun Gothic", sans-serif`;
       context.fillText(
-        (options && options.title) || '대한민국 여행 동선',
+        titleText,
         width / 2.0,
         cardY + cardHeight * 0.40,
         cardWidth * 0.90

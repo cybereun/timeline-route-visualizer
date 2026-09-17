@@ -214,3 +214,21 @@ test('frameRenderer produces consistent frames without errors on mock canvas con
   const headOutro = drawFrame(1.0, 580, 600);
   assert.ok(headOutro);
 });
+
+test('computeViewBounds auto-fits overseas destinations when trip extends beyond Korea', () => {
+  // Korea to Tokyo route
+  const route = buildRoute([
+    {
+      date: '2026-07-01',
+      segments: [
+        { points: [[37.5, 127.0], [35.6, 139.8]] }, // Seoul to Tokyo
+      ],
+    },
+  ]);
+  const bounds = computeViewBounds(route, 'korea', 720, 1280);
+
+  const seoulX = (127.0 + 180) / 360;
+  const tokyoX = (139.8 + 180) / 360;
+  assert.ok(bounds.minX < seoulX, 'Seoul must be inside viewport');
+  assert.ok(bounds.maxX > tokyoX, 'Tokyo must be inside viewport');
+});
